@@ -21,4 +21,6 @@ jobs:
         run: flutter pub get
 
       - name: Analyze
-        run: flutter analyze --no-pub 2>&1 | tail -60
+        run: |
+          set -o pipefail
+          flutter analyze --no-pub 2>&1 | tee /tmp/analyze.log | tail -80

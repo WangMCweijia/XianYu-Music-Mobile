@@ -74,13 +74,13 @@ const Map<String, String> enDictManual = {
   '唤醒腕上端需要华为运动健康提供 Wear Engine 服务，是否前往安装？':
       'Waking the watch app requires Huawei Health (the Wear Engine host). Install it now?',
   '同步到手表？': 'Sync to watch?',
-  '将在手表端启动弦予音乐；首次使用需完成 Wear Engine 授权':
-      'XianYu Music will be launched on the watch; Wear Engine authorization is required on first use',
+  '将在手表端启动音狐；首次使用需完成 Wear Engine 授权':
+      'YinHu Music will be launched on the watch; Wear Engine authorization is required on first use',
   'Wear Engine 授权未完成': 'Wear Engine authorization not completed',
   'Wear Engine 授权失败：{m}': 'Wear Engine authorization failed: {m}',
   '未检测到已绑定的华为手表': 'No bound Huawei watch found',
-  '远程唤醒仅支持华为手表；Wear OS 手表（三星/OPPO/小米等）请在表上打开弦予音乐，首次打开后将保持常驻，手机播放即可唤起':
-      'Remote wake-up only supports Huawei watches. For Wear OS watches (Samsung/OPPO/Xiaomi, etc.), open XianYu Music on the watch once — it stays resident afterwards and wakes when your phone plays',
+  '远程唤醒仅支持华为手表；Wear OS 手表（三星/OPPO/小米等）请在表上打开音狐，首次打开后将保持常驻，手机播放即可唤起':
+      'Remote wake-up only supports Huawei watches. For Wear OS watches (Samsung/OPPO/Xiaomi, etc.), open YinHu Music on the watch once — it stays resident afterwards and wakes when your phone plays',
   '已拉起腕上端': 'Watch app launched',
   '唤醒失败': 'Failed to wake the watch',
   '设备管理': 'Device management',
@@ -326,7 +326,7 @@ const Map<String, String> enDictManual = {
   '登录后同步你的音乐与设置': 'Sign in to sync your music and settings',
   '登录前验证': 'Pre-login verification',
   '登录失败': 'Sign-in failed',
-  '登录弦予音乐账号': 'Sign in to your XianYu Music account',
+  '登录音狐账号': 'Sign in to your YinHu Music account',
   '登录响应无效': 'Invalid sign-in response',
   '登录状态已失效': 'Session expired',
   '登录状态已失效，请重新登录。': 'Your session has expired. Please sign in again.',
@@ -505,7 +505,7 @@ const Map<String, String> enDictManual = {
   '基本信息': 'Basic info',
   '技术信息': 'Technical info',
   '继续修改昵称': 'Keep editing nickname',
-  '继续修改弦予号': 'Keep editing XianYu ID',
+  '继续修改音狐号': 'Keep editing YinHu ID',
   '继续选择头像': 'Keep choosing an avatar',
   '加入群组': 'Join group',
   '检测到本地设置与云端设置不一致，请选择要保留的版本。下一步可按类别精细调整。':
@@ -660,7 +660,7 @@ const Map<String, String> enDictManual = {
   '请输入答案': 'Enter the answer',
   '请输入登录密码': 'Enter your password',
   '请输入昵称': 'Enter a nickname',
-  '请输入弦予号': 'Enter your XianYu ID',
+  '请输入音狐号': 'Enter your YinHu ID',
   '请输入新昵称': 'Enter a new nickname',
   '请输入邮箱验证码': 'Enter the email code',
   '请输入正确的邮箱': 'Enter a valid email address',
@@ -847,10 +847,10 @@ const Map<String, String> enDictManual = {
   '前往导入音源': 'Import an audio source',
   '未导入任何内容': 'Nothing was imported',
   '未发现包含音频的文件夹': 'No folders with audio found',
-  '未获取到当前弦予号，请重新登录': 'XianYu ID unavailable; please sign in again',
+  '未获取到当前音狐号，请重新登录': 'YinHu ID unavailable; please sign in again',
   '未获取到当前账号信息，请重新登录': 'Account info unavailable; please sign in again',
-  '未获取到弦予号，无法修改密码，请重新登录':
-      'XianYu ID unavailable; cannot change the password. Please sign in again.',
+  '未获取到音狐号，无法修改密码，请重新登录':
+      'YinHu ID unavailable; cannot change the password. Please sign in again.',
   '未获取到注册邮箱，请重新登录': 'Registration email unavailable; please sign in again',
   '未检测到加密信息（已是普通音频或缺密钥）':
       'No encryption detected (already plain audio, or the key is missing)',
@@ -916,15 +916,15 @@ const Map<String, String> enDictManual = {
   '下载中': 'Downloading',
   '先在 设置 → 音源 安装并启用插件，再回来导入在线歌单':
       'First install and enable a plugin under Settings → Sources, then import online playlists here',
-  '弦予': 'XianYu',
-  '弦予号仅支持纯数字、纯字母或数字字母组合':
-      'XianYu ID supports digits only, letters only, or a mix',
-  '弦予号修改成功': 'XianYu ID updated',
-  '弦予号修改失败': 'Failed to update the XianYu ID',
-  '弦予号需 6-20 位': 'XianYu ID must be 6-20 characters',
-  '弦予音乐播放控制': 'XianYu Music playback controls',
-  '弦予音乐应用备份': 'XianYu Music app backup',
-  '弦予用户': 'XianYu user',
+  '音狐': 'YinHu',
+  '音狐号仅支持纯数字、纯字母或数字字母组合':
+      'YinHu ID supports digits only, letters only, or a mix',
+  '音狐号修改成功': 'YinHu ID updated',
+  '音狐号修改失败': 'Failed to update the YinHu ID',
+  '音狐号需 6-20 位': 'YinHu ID must be 6-20 characters',
+  '音狐播放控制': 'YinHu Music playback controls',
+  '音狐应用备份': 'YinHu Music app backup',
+  '音狐用户': 'YinHu user',
   '显示背景歌词': 'Show background lyrics',
   '限制器': 'Limiter',
   '相位': 'Phase',
@@ -951,7 +951,7 @@ const Map<String, String> enDictManual = {
       'Changes are written to audio file tags (ID3/Vorbis/MP4)',
   '修改密码失败': 'Failed to change the password',
   '修改昵称提示': 'Nickname change notice',
-  '修改弦予号提示': 'XianYu ID change notice',
+  '修改音狐号提示': 'YinHu ID change notice',
   '虚拟环绕': 'Virtual surround',
   '虚拟距离': 'Virtual distance',
   '播放优先匹配本地曲库，在线按可用音源解析':
@@ -1347,7 +1347,7 @@ const Map<String, String> enDictManual = {
   '错误日志（{count} 条）': 'Error logs ({count})',
   '导出日志（{n} 条）': 'Export logs ({n})',
   '应用 ({count})': 'Apply ({count})',
-  '邀请你去弦予音乐听《{song}》': 'Listen to "{song}" on XianYu Music',
+  '邀请你去音狐听《{song}》': 'Listen to "{song}" on YinHu Music',
   '预览（{count} 个可重命名，': 'Preview ({count} renamable,',
   '结果来自 {source}': 'Results from {source}',
   '来源：{source}': 'Source: {source}',
@@ -1358,8 +1358,8 @@ const Map<String, String> enDictManual = {
   '{month}月{day}日 · 周{week}': '{month}/{day} · {week}',
   '{year}年{month}月{day}日': '{year}/{month}/{day}',
   '{month}月{day}日 {time}': '{month}/{day} {time}',
-  '{user}邀请你去弦予音乐听《{song}》':
-      '{user} invites you to listen to "{song}" on XianYu Music',
+  '{user}邀请你去音狐听《{song}》':
+      '{user} invites you to listen to "{song}" on YinHu Music',
   '{value} dB': '{value} dB',
   '提前 {value}ms': '{value}ms early',
   '延后 {value}ms': '{value}ms late',
@@ -1383,7 +1383,7 @@ const Map<String, String> enDictManual = {
   '[00:00.00] 歌词内容…': '[00:00.00] Lyrics content…',
   '\n含设置': '\nIncludes settings',
   '{artist} · {n} 首': '{artist} · {n} songs',
-  '{artist} · 来自弦予音乐': '{artist} · From XianYu Music',
+  '{artist} · 来自音狐': '{artist} · From YinHu Music',
   '{h} 小时': '{h} hours',
   '{label}：{reason}': '{label}: {reason}',
   '{letter} · {n} 首': '{letter} · {n} songs',
@@ -1406,8 +1406,8 @@ const Map<String, String> enDictManual = {
   '{skip} 个跳过）': '{skip} skipped)',
   '{status}。\n\n': '{status}.\n\n',
   '{sub} · {n} 首': '{sub} · {n} songs',
-  '{title} · {artist}\n来自弦予音乐\n{url}':
-      '{title} · {artist}\nFrom XianYu Music\n{url}',
+  '{title} · {artist}\n来自音狐\n{url}':
+      '{title} · {artist}\nFrom YinHu Music\n{url}',
   '{v}s/圈': '{v}s/rev',
   '{y}年{m}月{d}日': '{y}/{m}/{d}',
   '「{name}」\n当前版本：v{cur}\n新版本：v{new}\n\n是否立即更新？':
@@ -1415,8 +1415,8 @@ const Map<String, String> enDictManual = {
   '当前版本 v{ver}': 'Current version v{ver}',
   '立即更新': 'Update now',
   '稍后': 'Later',
-  '© 2026 弦予音乐 · 源码可见协议 XSAL-1.0':
-      '© 2026 XianYu Music · Source-Available License XSAL-1.0',
+  '© 2026 音狐 · 源码可见协议 XSAL-1.0':
+      '© 2026 YinHu Music · Source-Available License XSAL-1.0',
   '· {platform}（{n} 首）': '· {platform} ({n} songs)',
   '· {plugin} → {platform}（{n} 首）': '· {plugin} → {platform} ({n} songs)',
   '6-20 位数字/字母': '6-20 alphanumeric characters',
@@ -1566,9 +1566,9 @@ const Map<String, String> enDictManual = {
   '文件不存在：{name}': 'File does not exist: {name}',
   '文件缺失': 'File missing',
   '无标题': 'Untitled',
-  '弦予号：{id}': 'XianYu ID: {id}',
-  '弦予音乐日志': 'XianYu Music log',
-  '弦予音乐调试日志': 'XianYu Music debug log',
+  '音狐号：{id}': 'YinHu ID: {id}',
+  '音狐日志': 'YinHu Music log',
+  '音狐调试日志': 'YinHu Music debug log',
   '新增 {n} 个歌单，': '{n} playlists added, ',
   '修改原因：{reason}': 'Reason: {reason}',
   '延后 {v}ms': '{v}ms late',
@@ -1691,8 +1691,8 @@ const Map<String, String> enDictManual = {
   '位置': 'Location',
   '扫描到二维码，确认后该设备将登录你的账号':
       'A sign-in was requested on this device. Confirm to sign in.',
-  '请登录你的弦予音乐账号后，再扫描待登录设备的二维码确认登录。':
-      'Sign in to your XianYu Music account, then scan the QR code on the device to confirm sign-in.',
+  '请登录你的音狐账号后，再扫描待登录设备的二维码确认登录。':
+      'Sign in to your YinHu Music account, then scan the QR code on the device to confirm sign-in.',
   '扫码登录': 'Scan to sign in',
   '闪光灯': 'Flashlight',
   '将待登录设备的二维码对准取景框':
@@ -1700,19 +1700,19 @@ const Map<String, String> enDictManual = {
   '扫码失败': 'Scan failed',
   '二维码无效或已过期': 'Invalid or expired QR code',
   '登录成功': 'Sign-in successful',
-  '该设备已登录你的弦予音乐账号。':
-      'That device is now signed in to your XianYu Music account.',
-  '扫码确认登录其他设备，需要先登录你的弦予音乐账号。':
-      'Sign in to your XianYu Music account first to confirm sign-in on another device.',
-  '使用已登录的弦予音乐 App 扫一扫快捷登录':
-      'Scan with a signed-in XianYu Music app for quick sign-in',
+  '该设备已登录你的音狐账号。':
+      'That device is now signed in to your YinHu Music account.',
+  '扫码确认登录其他设备，需要先登录你的音狐账号。':
+      'Sign in to your YinHu Music account first to confirm sign-in on another device.',
+  '使用已登录的音狐 App 扫一扫快捷登录':
+      'Scan with a signed-in YinHu Music app for quick sign-in',
   '已扫码，请在手机上确认登录': 'Scanned. Confirm the sign-in on your phone',
   '二维码已过期，请重新生成': 'QR code expired. Generate a new one',
   '重新生成': 'Regenerate',
   '正在获取二维码...': 'Getting QR code...',
   '二维码获取失败，请重试': 'Failed to get QR code. Please retry',
   '知道了': 'Got it',
-  '弦予.桌面版': 'XianYu Desktop',
+  '音狐.桌面版': 'YinHu Desktop',
   '搜索设置': 'Search settings',
   '未找到相关设置': 'No matching settings found',
   '设置分类': 'Settings category',
@@ -1741,7 +1741,7 @@ const Map<String, String> enDictManual = {
   '开启后本机作为 DLNA 设备出现在局域网，其它 App 可直接投歌到本端':
       'When enabled, this device appears as a DLNA device on the LAN. Other apps can cast songs to it.',
   '投送端看到的名字': 'Name seen by casting devices',
-  '弦予音乐': 'XianYu Music',
+  '音狐': 'YinHu Music',
   '该歌单已同步到云端': 'This playlist is synced to the cloud',
   '歌单已同步到云端': 'Playlist is synced to the cloud',
   '收藏已同步到云端': 'Favorites are synced to the cloud',
@@ -1761,7 +1761,7 @@ const Map<String, String> enDictManual = {
   '已禁用 {n} 个插件': 'Disabled {n} plugins',
   '处理中...': 'Working...',
   '操作失败：{e}': 'Operation failed: {e}',
-  '弦予音乐隐私政策': 'XianYu Music Privacy Policy',
+  '音狐隐私政策': 'YinHu Music Privacy Policy',
   '播放': 'Playback',
   '播放设置': 'Playback settings',
   '在线播放': 'Online playback',
@@ -1773,7 +1773,7 @@ const Map<String, String> enDictManual = {
   '扫描并遥控同一局域网的电脑端': 'Scan for and control the desktop app on the same network',
   '连接状态': 'Connection status',
   '扫描局域网电脑': 'Scan LAN for computers',
-  '搜索同一网络下正在运行的弦予桌面端': 'Find a running XianYu desktop app on the same network',
+  '搜索同一网络下正在运行的音狐桌面端': 'Find a running YinHu desktop app on the same network',
   '手动连接': 'Connect manually',
   '输入电脑端显示的 IP 与端口': 'Enter the IP and port shown on the desktop app',
   '忘记配对': 'Forget pairing',

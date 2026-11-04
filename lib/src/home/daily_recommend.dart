@@ -190,7 +190,28 @@ const _searchConcurrency = 4;
 const _maxCandidates = 90;
 const _maxLocalCandidates = 20;
 const _minDurationMs = 45000;
-const _cacheKey = 'daily_recommend_v5';
+/// v6：算法改为本地生成，缓存结构不变但需让旧缓存失效一次
+const _cacheKey = 'daily_recommend_v6';
+
+/// 无账号体系后的本地固定身份（日推缓存按此归并）
+const _localIdentity = 'local';
+
+/// 通用兜底搜索词池：本地库为空、或本地口味不足以铺满时按日期种子抽取。
+/// 只放「一定搜得到」的宽泛词，避免小众词在插件侧零结果。
+const _fallbackQueries = <String>[
+  '华语流行',
+  '经典老歌',
+  '民谣',
+  '轻音乐',
+  '摇滚',
+  '粤语经典',
+  '纯音乐',
+  '影视原声',
+  '国风',
+  '爵士',
+  '电音',
+  '怀旧金曲',
+];
 
 int _imul(int a, int b) => ((a * b) & 0xFFFFFFFF).toSigned(32);
 
@@ -230,6 +251,111 @@ String _localDateKey() {
       '${now.day.toString().padLeft(2, '0')}';
 }
 
+/// 日期 → 稳定种子：字符串哈希自实现（不依赖 runtime 的 hashCode 实现细节），
+/// 保证同一天在不同进程/不同版本里得到同一批推荐。
+int _seedFromDate(String date) {
+  var h = 0;
+  for (final c in date.codeUnits) {
+    h = (h * 31 + c) & 0x7FFFFFFF;
+  }
+  return h;
+}
+
+/// 本地口味画像：本地库中出现次数 ≥2 的歌手，按频次取前 3。
+/// 本地库本就代表用户偏好，无需再依赖服务端画像接口。
+List<String> _localTopArtists(List<Song> songs) {
+  final counts = <String, int>{};
+  for (final s in songs) {
+    for (final seg in s.artist.split(RegExp(r'[/、,&]'))) {
+      final name = seg.trim();
+      if (name.isEmpty || name.length > 24) continue;
+      if (RegExp(r'^(未知|未知歌手|various artists|unknown)$',
+              caseSensitive: false)
+          .hasMatch(name)) {
+        continue;
+      }
+      counts[name] = (counts[name] ?? 0) + 1;
+    }
+  }
+  // 频次 ≥2 才算「常听」；本地库很小时放宽到全量，避免只剩探索词
+  var entries = counts.entries.where((e) => e.value >= 2).toList();
+  if (entries.isEmpty) entries = counts.entries.toList();
+  entries.sort((a, b) => b.value.compareTo(a.value));
+  return entries.take(3).map((e) => e.key).toList();
+}
+
+/// 本地推荐算法：账号体系移除后不再向服务端申请算法，改为
+/// 「本地口味歌手 + 每日轮换探索词」自行组装，结构与服务端下发完全同构，
+/// 因此下游 `_executeAlgorithm`/缓存/换一批逻辑全部沿用不变。
+DailyRecommendAlgorithm _buildLocalAlgorithm(
+  String date,
+  List<Song> localSongs,
+) {
+  final seed = _seedFromDate(date);
+  final topArtists = _localTopArtists(localSongs);
+  final strategies = <DailyRecommendStrategy>[];
+
+  for (var i = 0; i < topArtists.length; i++) {
+    strategies.add(DailyRecommendStrategy(
+      id: 'artist_$i',
+      type: 'artist',
+      // 0.62 / 0.50 / 0.38：越靠前的歌手权重越高
+      weight: 0.62 - i * 0.12,
+      queries: [topArtists[i]],
+      reason: tr('因为你常听 {artist}', {'artist': topArtists[i]}),
+    ));
+  }
+
+  // 探索位：每日用同一 seed 洗牌，保证「同一天同一批、隔天换新」
+  final pool = List<String>.from(_fallbackQueries);
+  final rand = _mulberry32(seed ^ 0x5A17);
+  for (var i = pool.length - 1; i > 0; i--) {
+    final j = (rand() * (i + 1)).floor();
+    final tmp = pool[i];
+    pool[i] = pool[j];
+    pool[j] = tmp;
+  }
+  for (var i = 0; i < 3 && i < pool.length; i++) {
+    strategies.add(DailyRecommendStrategy(
+      id: 'explore_$i',
+      type: 'explore',
+      weight: 0.30 - i * 0.06,
+      queries: [pool[i]],
+      reason: tr('为你探索：{q}', {'q': pool[i]}),
+    ));
+  }
+
+  return DailyRecommendAlgorithm(
+    raw: {
+      'date': date,
+      'daily_seed': seed,
+      'target_count': 30,
+      'strategies': [
+        for (final s in strategies)
+          {
+            'id': s.id,
+            'type': s.type,
+            'weight': s.weight,
+            'queries': s.queries,
+            'reason': s.reason,
+          },
+      ],
+      'exclusions': const {'songs': <dynamic>[]},
+      'profile': {
+        'top_artists': [
+          for (final a in topArtists) {'name': a},
+        ],
+      },
+    },
+    date: date,
+    dailySeed: seed,
+    targetCount: 30,
+    strategies: strategies,
+    exclusions: const [],
+    topArtistNames: topArtists,
+  );
+}
+
 class _PluginSearchTask {
   final DailyRecommendStrategy strategy;
   final String query;
@@ -241,7 +367,7 @@ typedef _Collected = ({DailyRecommendItem item, double score});
 
 Future<List<DailyRecommendItem>> _executeAlgorithm(
     DailyRecommendAlgorithm algorithm,
-    PluginEngine engine,
+    PluginEngine? engine,
     List<PluginSource> pluginSources,
     List<Song> localSongs) async {
   final exclusionSet = <String>{};
@@ -250,29 +376,34 @@ Future<List<DailyRecommendItem>> _executeAlgorithm(
     exclusionSet.add('${_normalizeText(e.title)}|${_normalizeText(_firstArtist(e.artist))}');
   }
 
-  final enabledPlugins = pluginSources.where((s) => s.enabled).toList();
-  final playable = <PluginSource>[];
-  for (final p in enabledPlugins) {
-    if (await engine.canPlayMusic(p)) playable.add(p);
-  }
-  String probeKeyword = '热门音乐';
-  for (final s in algorithm.strategies) {
-    if (s.queries.isNotEmpty) {
-      probeKeyword = s.queries.first;
-      break;
+  final collected = <_Collected>[];
+  if (engine != null) {
+    final enabledPlugins = pluginSources.where((s) => s.enabled).toList();
+    final playable = <PluginSource>[];
+    for (final p in enabledPlugins) {
+      if (await engine.canPlayMusic(p)) playable.add(p);
+    }
+    String probeKeyword = '热门音乐';
+    for (final s in algorithm.strategies) {
+      if (s.queries.isNotEmpty) {
+        probeKeyword = s.queries.first;
+        break;
+      }
+    }
+    final probes = await Future.wait(
+        playable.map((p) => _probePluginAlive(engine, p, probeKeyword)));
+    final alivePlugins = <PluginSource>[
+      for (var i = 0; i < playable.length; i++)
+        if (probes[i]) playable[i],
+    ];
+    // 探活全部超时/失败时不再一刀切判死：退回全部可播放插件照常搜索，
+    // 宁可个别曲目取链失败，也好过整页空结果
+    final searchPlugins = alivePlugins.isNotEmpty ? alivePlugins : playable;
+    if (searchPlugins.isNotEmpty) {
+      await _searchAll(engine, algorithm, searchPlugins, exclusionSet, collected);
     }
   }
-  final probes = await Future.wait(
-      playable.map((p) => _probePluginAlive(engine, p, probeKeyword)));
-  final alivePlugins = <PluginSource>[
-    for (var i = 0; i < playable.length; i++)
-      if (probes[i]) playable[i],
-  ];
-  final collected = <_Collected>[];
-  if (alivePlugins.isNotEmpty) {
-    await _searchAll(engine, algorithm, alivePlugins, exclusionSet, collected);
-  }
-  // 本地库候选并入（同 key 按分数竞争）：无插件/网盘时本地兜底
+  // 本地库候选并入（同 key 按分数竞争）：无插件时本地兜底
   _collectLocalCandidates(algorithm, exclusionSet, collected, localSongs);
 
   final best = <String, _Collected>{};
@@ -680,17 +811,10 @@ final dailyRecommendProvider =
 class DailyRecommendNotifier extends AsyncNotifier<DailyRecommendState> {
   @override
   Future<DailyRecommendState> build() async {
-    // 先等凭据恢复落定：恢复期 user 必为空，提前走未登录分支
-    // 会把当天日推缓存清掉，表现为每次重启都重新生成
-    await ref.read(authProvider.notifier).whenRestored;
-    // 账号功能已移除：日推改用本地固定身份，无需登录即可生成与命中缓存
-    final userKey = ref.watch(authProvider).user?.ciyuanxiId?.trim() ?? '';
-    final ciyuanxiId = userKey.isEmpty ? 'local' : userKey;
-
     final today = _localDateKey();
     final cached = await _loadCache();
     if (cached != null &&
-        cached.ciyuanxiId == ciyuanxiId &&
+        cached.ciyuanxiId == _localIdentity &&
         cached.date == today) {
       final items = _pickBatch(cached.candidates, cached.algorithm, cached.batch);
       unawaited(_backfillWyCovers(items));
@@ -710,20 +834,24 @@ class DailyRecommendNotifier extends AsyncNotifier<DailyRecommendState> {
       } catch (_) {}
     }
 
-    // 登录即生成：插件/网盘/本地任一来源都能出候选（全部缺失时候选为空，
-    // 由页面空态提示补充来源），不再把插件作为前置门槛
+    // 账号体系已移除：推荐算法在本地按「常听歌手 + 每日轮换探索词」生成，
+    // 不再请求服务端 get_daily_recommend（该接口随账号下线，是「获取失败」根因）
+    final algorithm = _buildLocalAlgorithm(today, localSongs);
     final pluginSources = ref.watch(pluginManagerProvider).sources;
 
-    final data = await ref
-        .read(authProvider.notifier)
-        .requestAction('get_daily_recommend', {'ciyuanxi_id': ciyuanxiId});
-    final algorithm = DailyRecommendAlgorithm.fromJson(data);
-    final engine = await ref.read(pluginEngineProvider.future);
+    PluginEngine? engine;
+    try {
+      engine = await ref.read(pluginEngineProvider.future);
+    } catch (e) {
+      // 插件引擎初始化失败不该让整页报错：退化为纯本地推荐
+      AppLog.debug('home', '插件引擎初始化失败，日推仅用本地候选: $e');
+    }
+
     final candidates =
         await _executeAlgorithm(algorithm, engine, pluginSources, localSongs);
     if (candidates.isNotEmpty) {
       await _saveCache(_DailyCache(
-        ciyuanxiId: ciyuanxiId,
+        ciyuanxiId: _localIdentity,
         date: today,
         batch: 0,
         algorithm: algorithm,
@@ -803,18 +931,18 @@ class DailyRecommendNotifier extends AsyncNotifier<DailyRecommendState> {
   }
 
   Future<void> refresh() async {
-    final ciyuanxiId = ref.read(authProvider).user?.ciyuanxiId?.trim() ?? '';
-    if (ciyuanxiId.isEmpty) return;
     final today = _localDateKey();
     final cached = await _loadCache();
-    if (cached == null || cached.ciyuanxiId != ciyuanxiId || cached.date != today) {
+    if (cached == null ||
+        cached.ciyuanxiId != _localIdentity ||
+        cached.date != today) {
       state = const AsyncLoading();
       state = await AsyncValue.guard(build);
       return;
     }
     final nextBatch = cached.batch + 1;
     await _saveCache(_DailyCache(
-      ciyuanxiId: ciyuanxiId,
+      ciyuanxiId: _localIdentity,
       date: today,
       batch: nextBatch,
       algorithm: cached.algorithm,
@@ -840,26 +968,11 @@ class DailyRecommendNotifier extends AsyncNotifier<DailyRecommendState> {
   }
 }
 
+/// 账号体系与云端推荐算法均已下线：喜欢信号不再上报。
+/// 保留签名以免改动三处调用点，内部为零网络请求的空实现。
 Future<void> reportDailyLikeSignals(
-  AuthNotifier auth,
+  AuthNotifier _,
   String ciyuanxiId, {
   required String signalType,
   required List<({String songName, String singer})> songs,
-}) async {
-  if (ciyuanxiId.isEmpty) return;
-  final payload = [
-    for (final s in songs)
-      if (s.songName.trim().isNotEmpty)
-        {'song_name': s.songName.trim(), 'singer': s.singer.trim()},
-  ];
-  if (payload.isEmpty) return;
-  try {
-    await auth.requestAction('report_daily_like', {
-      'ciyuanxi_id': ciyuanxiId,
-      'signal_type': signalType,
-      'songs': payload,
-    });
-  } catch (e) {
-    AppLog.debug('home', '上报每日推荐喜欢信号失败: $e');
-  }
-}
+}) async {}

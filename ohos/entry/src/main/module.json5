@@ -35,7 +35,7 @@
             ]
           },
           {
-            // 文件管理器/浏览器「打开」.js 插件脚本 → 弦予音乐（进插件导入流程）。
+            // 文件管理器/浏览器「打开」.js 插件脚本 → 音狐（进插件导入流程）。
             // general.javascript 为系统 UTD（统一数据类型）；viewData 是标准查看动作。
             "actions": [
               "ohos.want.action.viewData"
@@ -45,7 +45,7 @@
             ]
           },
           {
-            // 主题包文件关联：文件管理器「打开」主题 .json → 弦予音乐
+            // 主题包文件关联：文件管理器「打开」主题 .json → 音狐
             // （导入并应用主题）。general.json 为系统 UTD（统一数据类型），
             // 与上方 general.javascript（插件脚本）同一管线。
             "actions": [
@@ -56,7 +56,7 @@
             ]
           },
           {
-            // 音频文件关联：文件管理器「打开」音频 → 弦予音乐（直接播放）。
+            // 音频文件关联：文件管理器「打开」音频 → 音狐（直接播放）。
             // 声明 general.audio 伞类型 + 系统预置音频子 UTD（mp3/flac/ogg/
             // aiff/alac），保证文件管理器按具体 UTD 匹配时也能命中；格式清单
             // 与桌面端文件关联（audioFileAssociations.ts / file_assoc.rs

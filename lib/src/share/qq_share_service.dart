@@ -55,7 +55,7 @@ class QqShareService {
           imageUri: imageUri,
           musicUrl: musicUrl,
           targetUrl: targetUrl,
-          appName: tr('弦予音乐'),
+          appName: tr('音狐'),
         );
       } else {
         await TencentKitPlatform.instance.shareWebpage(
@@ -64,7 +64,7 @@ class QqShareService {
           summary: summary,
           imageUri: imageUri,
           targetUrl: targetUrl,
-          appName: tr('弦予音乐'),
+          appName: tr('音狐'),
         );
       }
     } catch (_) {

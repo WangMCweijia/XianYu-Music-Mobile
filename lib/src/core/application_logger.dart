@@ -203,7 +203,7 @@ class ApplicationLogManager extends StateNotifier<List<AppLogEntry>> {
         ? '检测到 ${counts[LogLevel.warn]} 条警告日志'
         : tr('未发现明显异常');
     final buffer = StringBuffer()
-      ..writeln(tr('弦予音乐调试日志'))
+      ..writeln(tr('音狐调试日志'))
       ..writeln('导出范围：${onlyErrors ? '错误日志' : '全部日志'}')
       ..writeln('导出时间：${DateTime.now().toIso8601String()}')
       ..writeln('日志数量：${selected.length}')

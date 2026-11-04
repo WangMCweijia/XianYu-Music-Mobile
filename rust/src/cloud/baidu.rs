@@ -15,7 +15,7 @@
 // - parse_share 先 share/verify 换 randsk（BDCLND），再以
 //   `Cookie: <登录态>; BDCLND=<urlencoded>` 拉 share/list；
 // - 分享文件 token 存 `<shareid>:<from>`，转存时拆出 from（split(':').last）；
-// - 转存前 ensureDir 建 /apps/弦予音乐（errno 12/-8 = 目录已存在可继续），
+// - 转存前 ensureDir 建 /apps/音狐（errno 12/-8 = 目录已存在可继续），
 //   转存 sekey 是 verify 换来的 randsk，不是提取码本身；
 // - 直链走 /api/download（gettemplatevariable 下发 sign1/sign3 →
 //   RC4+base64 铸 sign），host 命中 d2-ant/speed-limited 判限速；播放
@@ -36,7 +36,7 @@ use super::types::{
 use super::{biz_err, pre_parse_share, require_cred};
 
 const APP_ID: &str = "250528";
-const SAVE_DIR: &str = "/apps/弦予音乐";
+const SAVE_DIR: &str = "/apps/音狐";
 // OAuth 凭据（pan.baidu.com/union 注册，与 Dart 侧 baidu_provider 一致）。
 // 构建时注入：本地 gitignored 的 .cargo/config.toml [env] 段提供
 // XIANYU_BAIDU_APPKEY / XIANYU_BAIDU_APPSECRET；未注入（CI/他人克隆）

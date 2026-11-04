@@ -94,7 +94,7 @@ Future<void> main() async {
       builder: () => XianYuAudioHandler(),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'cc.xymusic.mobile.channel.audio',
-        androidNotificationChannelName: '弦予音乐播放控制',
+        androidNotificationChannelName: '音狐播放控制',
         androidNotificationOngoing: false,
         androidStopForegroundOnPause: false,
         androidNotificationIcon: 'drawable/ic_notification',

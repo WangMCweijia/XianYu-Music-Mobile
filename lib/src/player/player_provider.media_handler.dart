@@ -237,7 +237,7 @@ class XianYuAudioHandler extends as_pkg.BaseAudioHandler with as_pkg.SeekHandler
         : null;
     return as_pkg.MediaItem(
       id: item.path,
-      album: item.album.isEmpty ? tr('弦予音乐') : item.album,
+      album: item.album.isEmpty ? tr('音狐') : item.album,
       title: lyricTitle ?? item.title,
       artist: item.artist.isEmpty ? tr('未知歌手') : item.artist,
       duration:

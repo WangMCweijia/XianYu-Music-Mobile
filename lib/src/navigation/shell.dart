@@ -65,10 +65,10 @@ const double kLandscapeRailWidth = 210;
 const double kLandscapeRailIconWidth = 60;
 const double kLandscapeRailCollapseAt = 120;
 
-/// 品牌胶囊「弦予」短档最小 rail 宽：再窄直接隐藏
+/// 品牌胶囊「音狐」短档最小 rail 宽：再窄直接隐藏
 const double kLandscapeBrandShortMinRail = 100;
 
-/// 品牌胶囊全称档最小 rail 宽：低于此降「弦予」短档（100-150 区间）
+/// 品牌胶囊全称档最小 rail 宽：低于此降「音狐」短档（100-150 区间）
 const double kLandscapeBrandFullMinRail = 150;
 
 final isLandscapeProvider = StateProvider<bool>((ref) => false);
@@ -931,7 +931,7 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
             : Text.rich(
                 TextSpan(
                   children: [
-                    TextSpan(text: tr('弦予')),
+                    TextSpan(text: tr('音狐')),
                     TextSpan(
                       text: tr('音乐'),
                       style: const TextStyle(
@@ -1253,7 +1253,7 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
                                 : Text.rich(
                                     TextSpan(
                                       children: [
-                                        TextSpan(text: tr('弦予')),
+                                        TextSpan(text: tr('音狐')),
                                         TextSpan(
                                           text: tr('音乐'),
                                           style: const TextStyle(

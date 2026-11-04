@@ -696,7 +696,7 @@ class DownloadManager extends StateNotifier<DownloadState> {
       final tempLyrics = File('$baseNoExt.$fmt');
       if (saveLyricsFile && await tempLyrics.exists()) {
         await MediaStoreWriter.writeFromPath(
-          relativePath: 'Download/弦予',
+          relativePath: 'Download/音狐',
           displayName:
               '${p.basenameWithoutExtension(destPath)}.$fmt',
           mime: 'application/octet-stream',
@@ -721,9 +721,9 @@ class DownloadManager extends StateNotifier<DownloadState> {
     final m = RegExp(r'/storage/[^/]+/(Music|Download)(/.*)?$').firstMatch(norm);
     if (m != null) {
       final sub = (m.group(2) ?? '').replaceAll(RegExp(r'^/+|/+$'), '');
-      return sub.isEmpty ? '${m.group(1)}/弦予' : '${m.group(1)}/$sub';
+      return sub.isEmpty ? '${m.group(1)}/音狐' : '${m.group(1)}/$sub';
     }
-    return 'Music/弦予';
+    return 'Music/音狐';
   }
 
   static String _mimeFromExtension(String ext) {

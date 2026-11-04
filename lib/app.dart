@@ -438,7 +438,7 @@ class _XianYuAppState extends ConsumerState<XianYuApp> with WidgetsBindingObserv
 
     return init.hasError
         ? MaterialApp(
-            title: '${tr('弦予音乐')}${kDebugMode ? '·测试' : ''}',
+            title: '${tr('音狐')}${kDebugMode ? '·测试' : ''}',
             debugShowCheckedModeBanner: false,
             theme: theme,
             darkTheme: darkTheme,
@@ -453,7 +453,7 @@ class _XianYuAppState extends ConsumerState<XianYuApp> with WidgetsBindingObserv
           )
         : MaterialApp.router(
             key: ValueKey('app-${I18n.mode.name}'),
-            title: '${tr('弦予音乐')}${kDebugMode ? '·测试' : ''}',
+            title: '${tr('音狐')}${kDebugMode ? '·测试' : ''}',
             debugShowCheckedModeBanner: false,
             theme: theme,
             darkTheme: darkTheme,

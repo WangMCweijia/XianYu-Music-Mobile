@@ -185,7 +185,7 @@ class _IncomingBackupDialogState extends State<_IncomingBackupDialog> {
           File('${docs.path}${Platform.pathSeparator}${widget.fileName}');
       await file.writeAsString(widget.content, flush: true);
       await SharePlus.instance.share(
-        ShareParams(files: [XFile(file.path)], text: tr('弦予音乐腕上端备份')),
+        ShareParams(files: [XFile(file.path)], text: tr('音狐腕上端备份')),
       );
       if (mounted) Navigator.of(context).pop('saved');
     } catch (e) {
@@ -392,7 +392,7 @@ class _IncomingLogDialogState extends State<_IncomingLogDialog> {
           File('${docs.path}${Platform.pathSeparator}${widget.fileName}');
       await file.writeAsString(widget.content, flush: true);
       await SharePlus.instance.share(
-        ShareParams(files: [XFile(file.path)], text: tr('弦予音乐腕上端日志')),
+        ShareParams(files: [XFile(file.path)], text: tr('音狐腕上端日志')),
       );
       if (mounted) Navigator.of(context).pop('saved');
     } catch (e) {

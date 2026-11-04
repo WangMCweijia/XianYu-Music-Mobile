@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <!-- 自定义下载目录直写：MediaStore 兼容回退只能落 Music/Download 集合，
          用户自选任意目录（如根目录/自建文件夹）必须持有「所有文件访问」才能
-         直写成功，缺失时下载会静默回落 Music/弦予（download_provider 回退链） -->
+         直写成功，缺失时下载会静默回落 Music/音狐（download_provider 回退链） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage"/>
     <!-- 在线音乐与后台/控制中心播放服务 -->
@@ -93,7 +93,7 @@
              与 .js 插件、xianyu:// 深链）命中已运行实例时必须经 onNewIntent
              复用，绝不新建。曾用 singleTop + taskAffinity=""：外部应用携
              NEW_TASK 拉起时按亲和匹配不到任何任务 → 新建任务 + 第二个
-             MainActivity 实例（第二套 Flutter 引擎），表现为后台双弦予
+             MainActivity 实例（第二套 Flutter 引擎），表现为后台双音狐
              （其一白屏）。后改 singleTask 但保留空 taskAffinity，实测部分
              ROM（Honor MagicOS）上空亲和同样参与不了任务复用匹配，双实例
              依旧——空亲和必须一并去掉：默认包亲和下系统按亲和找到本应用
@@ -121,7 +121,7 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- xianyu:// 深链：分享落地页点「在弦予音乐中打开」拉起并播放分享歌曲 -->
+            <!-- xianyu:// 深链：分享落地页点「在音狐中打开」拉起并播放分享歌曲 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>

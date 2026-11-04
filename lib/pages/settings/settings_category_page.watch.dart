@@ -253,7 +253,7 @@ extension _SettingsCategoryPageWatch on _SettingsCategoryPageState {
     final ok = await showModernConfirmDialog(
       context: context,
       title: tr('同步到手表？'),
-      message: tr('将在手表端启动弦予音乐；首次使用需完成 Wear Engine 授权'),
+      message: tr('将在手表端启动音狐；首次使用需完成 Wear Engine 授权'),
       isDanger: false,
     );
     if (!ok) return;
@@ -275,7 +275,7 @@ extension _SettingsCategoryPageWatch on _SettingsCategoryPageState {
       await showModernConfirmDialog(
         context: context,
         title: tr('未检测到已绑定的华为手表'),
-        message: tr('远程唤醒仅支持华为手表；Wear OS 手表（三星/OPPO/小米等）请在表上打开弦予音乐，首次打开后将保持常驻，手机播放即可唤起'),
+        message: tr('远程唤醒仅支持华为手表；Wear OS 手表（三星/OPPO/小米等）请在表上打开音狐，首次打开后将保持常驻，手机播放即可唤起'),
         confirmText: tr('我知道了'),
         isDanger: false,
         icon: Icons.watch_outlined,

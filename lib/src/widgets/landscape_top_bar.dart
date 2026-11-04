@@ -47,13 +47,13 @@ class LandscapeSearchBar extends ConsumerWidget {
   }
 }
 
-/// rail 品牌行（主题品牌图 + 弦予音乐）：悬浮态在 rail 卡内流水排布，
+/// rail 品牌行（主题品牌图 + 音狐）：悬浮态在 rail 卡内流水排布，
 /// 固定态挂顶栏带 head 位承载——rail 移到带下层后，logo 留在 rail 里
 /// 会被带玻璃盖住
 Widget landscapeRailLogo(
   WidgetRef ref,
   ColorScheme scheme, {
-  // 紧凑档：只显示「弦予」（rail 收窄放不下全称时降级，再窄才隐藏）
+  // 紧凑档：只显示「音狐」（rail 收窄放不下全称时降级，再窄才隐藏）
   bool short = false,
 }) => Row(
   mainAxisSize: MainAxisSize.min,
@@ -73,7 +73,7 @@ Widget landscapeRailLogo(
           color: scheme.onSurface,
         ),
         children: [
-          TextSpan(text: tr('弦予')),
+          TextSpan(text: tr('音狐')),
           if (!short)
             TextSpan(
               text: tr('音乐'),
@@ -118,7 +118,7 @@ class LandscapeGlobalTopBar extends ConsumerWidget {
 
   /// 内容行起始缩进（rail 宽）：固定态玻璃贯通到屏幕左缘、悬浮态工具行
   /// 从 rail 右缘起排（拖分隔线联动），返回/搜索不压 rail；品牌胶囊按
-  /// 该宽三级联动（全称/弦予/隐藏）
+  /// 该宽三级联动（全称/音狐/隐藏）
   final double leadingIndent;
 
   @override
@@ -250,7 +250,7 @@ class LandscapeGlobalTopBar extends ConsumerWidget {
 
     // 固定带：贯通玻璃 + 裸品牌——品牌不套胶囊底，直接画在带上；左缘
     // 对齐下面侧边栏卡片（pad.left + 12，见 landscapeBrandLabel）；
-    // rail 收窄三级联动（全称/弦予/隐藏）。工具行（返回+搜索+动作）从
+    // rail 收窄三级联动（全称/音狐/隐藏）。工具行（返回+搜索+动作）从
     // rail 中线右缘起排，拖分隔线联动
     return GlassTopBar(
       // 顶距固定 8：横屏摄像头区延伸时 padding.top 是挖孔高度（挖孔在

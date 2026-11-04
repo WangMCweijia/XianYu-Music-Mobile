@@ -889,7 +889,7 @@ Widget floatingChromeBar(
   /// 顶距覆盖：横屏延伸进摄像头区时 statusBar 是挖孔高度（60+），
   /// 悬浮 chrome 要贴顶，由调用方传 8 绕开
   double? topInset,
-  /// 品牌胶囊：贴左独立悬浮（横屏悬浮态左缘「弦予音乐」，Rail 上方），
+  /// 品牌胶囊：贴左独立悬浮（横屏悬浮态左缘「音狐」，Rail 上方），
   /// 调用方自带胶囊形态与挖孔避让；工具行不从它续排
   Widget? brand,
 

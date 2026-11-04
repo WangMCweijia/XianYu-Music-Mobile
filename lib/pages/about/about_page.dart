@@ -62,9 +62,6 @@ class _AboutPageState extends ConsumerState<AboutPage> {
   static List<AcknowledgementItem> get _defaultReferenceProjects =>
       const <AcknowledgementItem>[
         AcknowledgementItem(
-            name: '弦予音乐桌面端',
-            url: 'https://github.com/TaXiaoQi/XianYu-Music-Desktop'),
-        AcknowledgementItem(
             name: 'BakaMusic', url: 'https://github.com/Zencok/BakaMusic'),
         AcknowledgementItem(
             name: 'BiliPai', url: 'https://github.com/jay3-yy/BiliPai/releases'),
@@ -206,14 +203,10 @@ class _AboutPageState extends ConsumerState<AboutPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final links = <({IconData icon, String label, String url})>[
-      if (_config.officialSiteUrl.isNotEmpty)
-        (icon: Icons.language, label: tr('前往官网'), url: _config.officialSiteUrl),
-      if (_config.joinGroupUrl.isNotEmpty)
-        (icon: Icons.group, label: tr('加入群组'), url: _config.joinGroupUrl),
-      if (_config.projectUrl.isNotEmpty)
-        (icon: Icons.code, label: tr('开源地址'), url: _config.projectUrl),
-    ];
+    // 已下线「前往官网 / 加入群组 / 开源地址」入口：本构建不对外提供
+    // 官方站点与源码仓库链接，更多信息区只保留参考项目与致谢
+    final hasMoreInfo =
+        _allReferenceProjects.isNotEmpty || _allAcknowledgements.isNotEmpty;
     final portraitFloating = !widget.embedded &&
         MediaQuery.of(context).orientation != Orientation.landscape &&
         (ref.watch(settingsProvider
@@ -242,7 +235,7 @@ class _AboutPageState extends ConsumerState<AboutPage> {
           ),
           const SizedBox(height: 14),
             Center(
-            child: Text(tr('弦予音乐'),
+            child: Text(tr('音狐'),
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
           ),
           const SizedBox(height: 4),
@@ -298,7 +291,7 @@ class _AboutPageState extends ConsumerState<AboutPage> {
                   ),
                 ),
               ),
-            if (links.isNotEmpty) ...[
+            if (hasMoreInfo) ...[
             const SizedBox(height: 28),
             Text(tr('更多信息'),
                 style: TextStyle(
@@ -313,27 +306,18 @@ class _AboutPageState extends ConsumerState<AboutPage> {
               ),
               child: Column(
                 children: [
-                  for (final item in links) ...[
+                  if (_allReferenceProjects.isNotEmpty)
                     PressableScale(
                       child: ListTile(
-                        leading: Icon(item.icon, color: scheme.primary),
-                        title: Text(item.label),
-                        trailing: Icon(Icons.open_in_new,
-                            size: 16, color: scheme.outline),
-                        onTap: () => _openUrl(item.url),
+                        leading:
+                            Icon(Icons.book_outlined, color: scheme.primary),
+                        title: Text(tr('参考项目')),
+                        trailing: Icon(Icons.chevron_right,
+                            size: 18, color: scheme.outline),
+                        onTap: () =>
+                            _showReferenceProjects(_allReferenceProjects),
                       ),
                     ),
-                    Divider(height: 1, indent: 52, color: scheme.outlineVariant),
-                  ],
-                  PressableScale(
-                    child: ListTile(
-                      leading: Icon(Icons.book_outlined, color: scheme.primary),
-                      title: Text(tr('参考项目')),
-                      trailing: Icon(Icons.chevron_right,
-                          size: 18, color: scheme.outline),
-                      onTap: () => _showReferenceProjects(_allReferenceProjects),
-                    ),
-                  ),
                   if (_allAcknowledgements.isNotEmpty)
                     PressableScale(
                       child: ListTile(
@@ -370,7 +354,7 @@ class _AboutPageState extends ConsumerState<AboutPage> {
           const SizedBox(height: 20),
           Center(
             child: Text(
-              tr('© 2026 弦予音乐 · 源码可见协议 XSAL-1.0'),
+              tr('© 2026 音狐 · 源码可见协议 XSAL-1.0'),
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 12, color: scheme.outline),
             ),
@@ -415,52 +399,36 @@ class _AboutPageState extends ConsumerState<AboutPage> {
   }
 
   /// 横屏面板动作区（桌面端同款排布）：一排实心钮 + 一排浅色钮，居中
-  /// 自适应宽度；竖屏不走此分支
+  /// 自适应宽度；竖屏不走此分支。官网/群组/开源地址入口已下线。
   List<Widget> _landscapeActionButtons() {
     return [
-      Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        alignment: WrapAlignment.center,
-        children: [
-          if (_config.updateEnabled && PlatformCaps.supportsInAppUpdate)
+      if (_config.updateEnabled && PlatformCaps.supportsInAppUpdate) ...[
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          alignment: WrapAlignment.center,
+          children: [
             _filledAction(
               label: _checkingUpdate ? tr('检查中…') : tr('检查更新'),
               icon: Icons.system_update_alt,
               busy: _checkingUpdate,
               onTap: _checkingUpdate ? null : _checkUpdate,
             ),
-          if (_config.officialSiteUrl.isNotEmpty)
-            _filledAction(
-              label: tr('前往官网'),
-              icon: Icons.language,
-              onTap: () => _openUrl(_config.officialSiteUrl),
-            ),
-          if (_config.joinGroupUrl.isNotEmpty)
-            _filledAction(
-              label: tr('加入群组'),
-              icon: Icons.group,
-              onTap: () => _openUrl(_config.joinGroupUrl),
-            ),
-        ],
-      ),
-      const SizedBox(height: 12),
+          ],
+        ),
+        const SizedBox(height: 12),
+      ],
       Wrap(
         spacing: 10,
         runSpacing: 10,
         alignment: WrapAlignment.center,
         children: [
-          if (_config.projectUrl.isNotEmpty)
+          if (_allReferenceProjects.isNotEmpty)
             _tonalAction(
-              label: tr('开源地址'),
-              icon: Icons.code,
-              onTap: () => _openUrl(_config.projectUrl),
+              label: tr('参考项目'),
+              icon: Icons.book_outlined,
+              onTap: () => _showReferenceProjects(_allReferenceProjects),
             ),
-          _tonalAction(
-            label: tr('参考项目'),
-            icon: Icons.book_outlined,
-            onTap: () => _showReferenceProjects(_allReferenceProjects),
-          ),
           if (_allAcknowledgements.isNotEmpty)
             _tonalAction(
               label: tr('致谢名单'),

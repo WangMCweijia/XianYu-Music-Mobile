@@ -125,10 +125,10 @@ class LatestVersion {
 class UserAgreement {
   final String title;
   final String content;
-  const UserAgreement({this.title = '弦予音乐用户协议', this.content = ''});
+  const UserAgreement({this.title = '音狐用户协议', this.content = ''});
 
   factory UserAgreement.fromJson(Map<String, dynamic> j) => UserAgreement(
-        title: (j['title'] ?? tr('弦予音乐用户协议')).toString(),
+        title: (j['title'] ?? tr('音狐用户协议')).toString(),
         content: (j['content'] ?? '').toString(),
       );
 }

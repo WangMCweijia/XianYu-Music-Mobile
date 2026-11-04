@@ -1,7 +1,7 @@
 {
   "app": {
     "bundleName": "com.xianyumusic.next",
-    "vendor": "XianYu Music",
+    "vendor": "YinHu Music",
     "versionCode": 1000200,
     "versionName": "1.0.2",
     "icon": "$media:app_icon",

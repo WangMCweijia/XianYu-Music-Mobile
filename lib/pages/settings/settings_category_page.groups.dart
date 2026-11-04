@@ -411,7 +411,7 @@ class _LogGroupState extends ConsumerState<_LogGroup> {
       _toast(tr('日志已导出'));
       try {
         await SharePlus.instance.share(
-          ShareParams(files: [XFile(file.path)], text: tr('弦予音乐日志')),
+          ShareParams(files: [XFile(file.path)], text: tr('音狐日志')),
         );
       } on MissingPluginException {
         // 分享实现缺失（如鸿蒙未挂 ohos 插件的旧包）：日志是纯文本，
@@ -554,7 +554,7 @@ class _AppBackupGroupState extends ConsumerState<_AppBackupGroup> {
       _toast(tr('备份已导出'));
       try {
         await SharePlus.instance.share(
-          ShareParams(files: [XFile(path)], text: tr('弦予音乐应用备份')),
+          ShareParams(files: [XFile(path)], text: tr('音狐应用备份')),
         );
       } on MissingPluginException {
         // 分享实现缺失：备份 JSON 已落盘，复制路径供用户自取

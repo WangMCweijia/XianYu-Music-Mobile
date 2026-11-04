@@ -23,13 +23,13 @@ extension WatchLinkControllerMessages on WatchLinkController {
           _send(LinkMessage.hello(
             ver: kLinkProtocolVersion,
             role: 'phone',
-            name: '弦予音乐',
+            name: '音狐',
           ), cloud: true);
         } else {
           _send(LinkMessage.hello(
             ver: kLinkProtocolVersion,
             role: 'phone',
-            name: '弦予音乐',
+            name: '音狐',
           ));
         }
         _startAuth(fromCloud: fromCloud);

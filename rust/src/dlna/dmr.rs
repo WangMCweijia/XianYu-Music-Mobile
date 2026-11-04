@@ -61,10 +61,10 @@ pub fn device_description(udn: &str, friendly_name: &str, port: u16) -> String {
 <device>
 <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
 <friendlyName>{esc_name}</friendlyName>
-<manufacturer>弦予音乐</manufacturer>
+<manufacturer>音狐</manufacturer>
 <manufacturerURL>https://xianyumusic.cn</manufacturerURL>
-<modelDescription>弦予音乐 DLNA 渲染器</modelDescription>
-<modelName>XianYu Music</modelName>
+<modelDescription>音狐 DLNA 渲染器</modelDescription>
+<modelName>YinHu Music</modelName>
 <modelNumber>1.0</modelNumber>
 <UDN>uuid:{udn}</UDN>
 <serviceList>

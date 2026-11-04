@@ -1,4 +1,4 @@
-//! 弦予音乐移动端复用核心（xianyu_core）。
+//! 音狐移动端复用核心（xianyu_core）。
 //!
 //! 从桌面端 `XianYu-Music-Desktop/src-tauri` 抽取的纯逻辑模块，
 //! 不依赖 Tauri / 桌面窗口，可被 Flutter（flutter_rust_bridge）或

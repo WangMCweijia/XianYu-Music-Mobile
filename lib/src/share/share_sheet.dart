@@ -311,8 +311,8 @@ String _buildShareText(WidgetRef ref, QueueItem song, String url) {
   final nickname = (user?.nickname ?? '').trim();
   final name = nickname.isNotEmpty ? nickname : (user?.username ?? '').trim();
   final firstLine = name.isEmpty
-      ? tr('邀请你去弦予音乐听《{song}》', {'song': song.title})
-      : tr('{user}邀请你去弦予音乐听《{song}》', {'user': name, 'song': song.title});
+      ? tr('邀请你去音狐听《{song}》', {'song': song.title})
+      : tr('{user}邀请你去音狐听《{song}》', {'user': name, 'song': song.title});
   return '$firstLine\n$url';
 }
 
@@ -416,7 +416,7 @@ Future<void> _shareToOtherApps(
 
   final artist = song.artist.isEmpty ? tr('未知歌手') : song.artist;
   final shareText =
-      tr('{title} · {artist}\n来自弦予音乐\n{url}', {'title': song.title, 'artist': artist, 'url': url});
+      tr('{title} · {artist}\n来自音狐\n{url}', {'title': song.title, 'artist': artist, 'url': url});
 
   try {
     final sent = await shareViaSystem(text: shareText, filePath: cover?.path);

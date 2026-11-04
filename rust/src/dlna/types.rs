@@ -126,7 +126,7 @@ pub trait DmrHost: Send + Sync {
 /// 渲染器启动配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RendererConfig {
-    /// 对外展示的设备名（如「弦予音乐 · XX的电脑」）。
+    /// 对外展示的设备名（如「音狐 · XX的电脑」）。
     pub friendly_name: String,
     /// 稳定 UDN（uuid），空则本次随机生成（建议上层持久化）。
     #[serde(default)]

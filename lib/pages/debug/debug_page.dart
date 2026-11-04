@@ -161,7 +161,7 @@ class DebugPage extends ConsumerWidget {
                     onTap: () => showUserAgreementModal(
                       context: context,
                       agreement: const UserAgreement(
-                        title: '弦予音乐用户协议',
+                        title: '音狐用户协议',
                         content:
                             '一、本协议为调试预览内容。\n二、滚动到底部后方可点击同意。\n三、此内容仅用于调试弹窗样式。',
                       ),

@@ -2,7 +2,7 @@
 #
 # 说明：Flutter 的业务逻辑（Dart）经 AOT 编译进 libapp.so，不由 Baseline Profile 管辖；
 # 本文件覆盖的是冷启动/首帧/进本地库/开播放页期间真正触达的 DeX 字节码面：
-#   1) 应用自家 Kotlin/Java 胶水（com/xianyumusic/**，同时覆盖 release 与 debug 包名）；
+#   1) 应用自家 Kotlin/Java 胶水（com/musicfox/**，同时覆盖 release 与 debug 包名）；
 #   2) Flutter 引擎 embedding（io/flutter/**，FlutterActivity / FlutterJNI / engine 等在首帧前触达）；
 #   3) 引擎创建时 GeneratedPluginRegistrant 会实例化的插件类。
 #
@@ -11,9 +11,9 @@
 # 在 API 29+ 上预编译，减少冷启动 JIT 解释执行。对齐 RwaS 项目的 baseline-prof.txt 写法。
 
 # ---- 应用自家代码 ----
-HSPLcom/xianyumusic/**->**(**)
-SPLcom/xianyumusic/**->**(**)
-Lcom/xianyumusic/**
+HSPLcom/musicfox/**->**(**)
+SPLcom/musicfox/**->**(**)
+Lcom/musicfox/**
 
 # ---- Flutter 引擎 embedding 胶水（首帧前触达，热启动配置） ----
 HSPLio/flutter/**->**(**)

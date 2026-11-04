@@ -194,7 +194,7 @@ class DesktopLinkNotifier extends StateNotifier<DesktopLinkState> {
       final hello = LinkMessage.hello(
         ver: kLinkProtocolVersion,
         role: 'remote',
-        name: '弦予音乐',
+        name: '音狐',
       );
       if (pairingCode != null && pairingCode.isNotEmpty) {
         hello.payload['pairing_code'] = pairingCode;
@@ -483,7 +483,7 @@ class DesktopLinkNotifier extends StateNotifier<DesktopLinkState> {
       });
       final gen = makeSeqGenerator();
       for (final frame in encodeFrames(
-        LinkMessage.hello(ver: kLinkProtocolVersion, role: 'remote', name: '弦予音乐'),
+        LinkMessage.hello(ver: kLinkProtocolVersion, role: 'remote', name: '音狐'),
         nextSeq: gen,
       )) {
         sock.add(frame);

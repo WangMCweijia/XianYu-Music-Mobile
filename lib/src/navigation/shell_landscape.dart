@@ -169,7 +169,7 @@ class _LandscapeRail extends ConsumerWidget {
     // 底就出视口，带左段采不到内容（右侧内容列已页面自垫，rail 同款）。
     // 固定态品牌行改挂顶栏带 head 位（rail 在带下层，logo 留在 rail 里
     // 会被带玻璃盖住）；悬浮态 rail 顶部品牌玻璃卡（与其他 rail 卡同款
-    // frostedCardSurface），rail 收窄三级联动（全称/弦予/隐藏）
+    // frostedCardSurface），rail 收窄三级联动（全称/音狐/隐藏）
     final railBrand = floating && railWidth >= kLandscapeBrandShortMinRail;
     final listTopPad = floating
         ? 14.0 + (railBrand ? 44.0 + 6 : 0) + 6
@@ -225,7 +225,7 @@ class _LandscapeRail extends ConsumerWidget {
                 child: SizedBox(
                   height: 44,
                   // 品牌在卡内水平居中（rail 拖宽后左对齐会明显偏左）；
-                  // 三级联动：≥150 全称、100-150「弦予」短档、<100 隐藏
+                  // 三级联动：≥150 全称、100-150「音狐」短档、<100 隐藏
                   child: Center(
                     child: landscapeRailLogo(
                       ref,

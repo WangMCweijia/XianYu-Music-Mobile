@@ -186,7 +186,7 @@ class _DesktopLinkSectionState extends ConsumerState<DesktopLinkSection> {
                     title: tr('扫描局域网电脑'),
                     subtitle: link.scanning
                         ? tr('正在扫描…')
-                        : tr('搜索同一网络下正在运行的弦予桌面端'),
+                        : tr('搜索同一网络下正在运行的音狐桌面端'),
                     trailing: link.scanning
                         ? const SizedBox(
                             width: 18,

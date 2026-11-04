@@ -3,8 +3,8 @@
 -dontwarn io.flutter.**
 
 # 平台通道与 MethodChannel 反射调用的入口类
--keep class com.xianyumusic.app.** { *; }
--dontwarn com.xianyumusic.app.**
+-keep class com.musicfox.app.** { *; }
+-dontwarn com.musicfox.app.**
 
 # 音频前台服务/通知（audio_service），被系统以反射方式拉起
 -keep class com.ryanheise.audioservice.** { *; }

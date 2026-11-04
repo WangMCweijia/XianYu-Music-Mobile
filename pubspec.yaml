@@ -1,5 +1,5 @@
 name: xianyu_music_mobile
-description: "弦予音乐移动端：本地 / 在线音乐播放，逐字歌词、插件音源与跨设备协同。"
+description: "音狐移动端：本地 / 在线音乐播放，逐字歌词、插件音源与跨设备协同。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # versionCode 过渡说明：已发出的 1.0.2-beta1（旧公式）= 1000201，新公式推导
 # 1.0.2 = 1000200 反而更低会被判降级；手动抬至 1000299 保证 beta1 用户可无缝
 # 覆盖升级，且低于 1.0.3 公式值（1000300）保持单调。1.0.3 起恢复自动推导。
-version: 2.0.6-beta5+2000600
+version: 2.0.7-beta1+2000701
 
 environment:
   # 下限放宽到 3.11：Flutter-OH 3.41.10-ohos 对应 Dart 3.11（鸿蒙构建用），

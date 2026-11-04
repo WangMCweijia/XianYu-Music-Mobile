@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- 桌面图标名（application label）：默认简中；values-en / values-zh-rTW 按系统语言切换 -->
-    <string name="app_name">弦予音乐</string>
-    <string name="widget_label">弦予播放</string>
-    <string name="widget_square_label">弦予播放·方形</string>
-    <string name="widget_recognize_label">弦予播放·识曲</string>
+    <string name="app_name">音狐</string>
+    <string name="widget_label">音狐播放</string>
+    <string name="widget_square_label">音狐播放·方形</string>
+    <string name="widget_recognize_label">音狐播放·识曲</string>
 
     <!-- 桌面组件选择面板的静态预览演示文案（仅用于 previewLayout，不进入运行时） -->
     <string name="widget_preview_song">夜空中最亮的星</string>
-    <string name="widget_preview_artist">弦予音乐</string>
+    <string name="widget_preview_artist">音狐</string>
 
     <!-- previewLayout 长按/拖动浮层的提示文案（仅用于预览布局） -->
     <string name="widget_preview_drag_hint">长按可拖动</string>
-    <string name="widget_preview_title_hint">弦予音乐 · 播放组件</string>
+    <string name="widget_preview_title_hint">音狐 · 播放组件</string>
 </resources>

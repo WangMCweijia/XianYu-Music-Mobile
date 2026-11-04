@@ -23,7 +23,7 @@ if (keystorePropertiesFile.exists()) {
 val hasHiCarSdk = file("libs/huawei-hicar-sdk.aar").exists()
 
 android {
-    namespace = "com.xianyumusic.app"
+    namespace = "com.musicfox.app"
     // file_picker 依赖的 flutter_plugin_android_lifecycle 要求 compileSdk >= 36；
     // 37：Honor/MagicOS ROM 按 targetSdk 分层下发预测返回进度事件，
     // targetSdk=36 时真手指手势进度恒为 0（页面不跟手），37 正常（对齐 PiliNara）
@@ -36,7 +36,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.xianyumusic.app"
+        applicationId = "com.musicfox.app"
         minSdk = flutter.minSdkVersion
         // 见 compileSdk 注释：预测返回进度需要 targetSdk 37
         targetSdk = 37
@@ -72,7 +72,7 @@ android {
     }
 
     buildTypes {
-        // debug 使用独立包名 com.xianyumusic.app.debug，与正式版共存互不覆盖：
+        // debug 使用独立包名 com.musicfox.app.debug，与正式版共存互不覆盖：
         // run 调试不再顶掉设备上已装的正式版，且调试版拥有独立沙箱数据互不污染。
         // FileProvider authorities 等清单内 ${applicationId} 自动跟随后缀，
         // 代码侧（SystemShare 等）动态取 packageName，无需改动。
@@ -202,10 +202,10 @@ tasks.matching { it.name == "preBuild" }.configureEach {
 }
 
 // 正式包自动归档：assembleRelease 完成后把 universal release APK（abiFilters 已限定
-// arm64）复制到 releases/android/弦予音乐v<版本>-Mobile.apk（预发布版本名自带
+// arm64）复制到 releases/android/音狐v<版本>-Mobile.apk（预发布版本名自带
 // -betaN 后缀），并把 gen_snapshot 的混淆符号 (--save-debugging-info=app.symbols，
 // 落于项目根) 归档到 releases/symbols/<版本>/，让裸 `flutter build apk --release`
-// 完整等价旧 build-release.ps1。命名沿用历史中文名「弦予音乐」，平台目录细分到
+// 完整等价旧 build-release.ps1。命名沿用历史中文名「音狐」，平台目录细分到
 // releases/android。符号用于 `flutter symbolize -d app.symbols` 还原线上混淆堆栈。
 tasks.register("archiveReleaseApk") {
     group = "build"
@@ -218,7 +218,7 @@ tasks.register("archiveReleaseApk") {
         releasesAndroidDir.mkdirs()
         // 架构后缀：abiFilters 已限定 arm64-v8a 单架构（见 defaultConfig ndk 块），
         // 包名恒为 -arm64，与鸿蒙 -arm64/-x86、腕上端 -arm32/-arm64 命名体系对齐。
-        val dest = File(releasesAndroidDir, "弦予音乐v$version-Mobile-arm64.apk")
+        val dest = File(releasesAndroidDir, "音狐v$version-Mobile-arm64.apk")
         apk.copyTo(dest, overwrite = true)
         logger.lifecycle("已归档正式安装包: ${dest.absolutePath} (${"%.1f".format(dest.length() / 1024.0 / 1024.0)} MB)")
         // 混淆符号归档（abiFilters 已限定 arm64 单架构，符号有效）

@@ -37,7 +37,7 @@ class WatchCloudChannel {
   Future<void> connect({
     required String url,
     required String key,
-    String name = '弦予音乐',
+    String name = '音狐',
     String? token,
   }) async {
     await close();

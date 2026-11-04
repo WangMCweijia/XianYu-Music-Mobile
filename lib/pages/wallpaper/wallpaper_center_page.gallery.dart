@@ -97,10 +97,9 @@ class _WallpaperBrowseTabState extends ConsumerState<_WallpaperBrowseTab>
 }
 
 class _WallpaperCard extends ConsumerWidget {
-  const _WallpaperCard({required this.wallpaper, this.statusBadge});
+  const _WallpaperCard({required this.wallpaper});
 
   final Map<String, dynamic> wallpaper;
-  final String? statusBadge;
 
   bool get _isVideo {
     final mt = (wallpaper['mediaType'] as String?) ?? '';
@@ -147,25 +146,6 @@ class _WallpaperCard extends ConsumerWidget {
                 child: Icon(
                   Icons.image_outlined,
                   color: scheme.onSurfaceVariant,
-                ),
-              ),
-            if (statusBadge != null)
-              Positioned(
-                top: 6,
-                right: 6,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    statusBadge!,
-                    style: const TextStyle(color: Colors.white, fontSize: 11),
-                  ),
                 ),
               ),
             if (_isVideo)

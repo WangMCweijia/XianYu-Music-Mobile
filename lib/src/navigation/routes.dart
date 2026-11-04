@@ -8,7 +8,6 @@ import 'package:go_router/go_router.dart';
 
 import '../core/settings.dart';
 import '../core/application_logger.dart';
-import '../auth/auth_provider.dart';
 import '../widgets/predictive_back_transitions.dart';
 import '../widgets/flying_cover.dart';
 import '../widgets/predictive_cover_return.dart';

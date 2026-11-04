@@ -5,6 +5,7 @@ import '../i18n/i18n.dart';
 import '../widgets/predictive_dialog_route.dart';
 import '../widgets/press_scale.dart';
 import 'playlist_provider.dart';
+import 'playlist_store.dart';
 
 /// 账号/云同步功能已移除：歌单删除只走本地确认删除。
 Future<void> confirmRemovePlaylist(

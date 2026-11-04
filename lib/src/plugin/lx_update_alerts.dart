@@ -166,8 +166,7 @@ class _LxUpdateAlertDialogState extends ConsumerState<_LxUpdateAlertDialog> {
         } else {
           final newVersion = engine.parseLxScriptInfo(script)['version'] ?? '';
           final manager = ref.read(pluginManagerProvider.notifier);
-          final service = PluginUpdateService(engine, manager,
-              api: ref.read(accountApiProvider));
+          final service = PluginUpdateService(engine, manager);
           final outcome = await service.performPluginUpdate(
             source,
             PluginUpdateCheckResult(

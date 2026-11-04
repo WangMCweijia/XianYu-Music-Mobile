@@ -346,11 +346,14 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
 
     return Scaffold(
       backgroundColor: appScaffoldBackground(context, ref),
-      appBar: FlatTopBar(
-        title: tr('音源测试'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.pop(),
+      appBar: PreferredSize(
+        preferredSize: Size.fromHeight(FlatTopBar.height(context)),
+        child: FlatTopBar(
+          title: tr('音源测试'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => context.pop(),
+          ),
         ),
       ),
       body: ListView(

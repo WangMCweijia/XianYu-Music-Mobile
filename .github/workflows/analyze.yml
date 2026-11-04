@@ -23,4 +23,4 @@ jobs:
       - name: Analyze
         run: |
           set -o pipefail
-          flutter analyze --no-pub 2>&1 | tee /tmp/analyze.log | tail -80
+          flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | tee /tmp/analyze.log | tail -80

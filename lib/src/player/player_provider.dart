@@ -17,7 +17,6 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../auth/account_api.dart';
 import '../core/application_logger.dart';
-import '../core/app_http.dart';
 import '../core/diagnostics.dart';
 import '../core/db_path.dart';
 import '../core/platform_caps.dart';
@@ -28,7 +27,6 @@ import '../favorites/favorites_provider.dart';
 import '../playlist/playlist_provider.dart';
 import '../home/home_providers.dart';
 import '../library/saf_channel.dart';
-import '../plugin/plugin_search.dart';
 import '../online/online_meta_store.dart';
 import '../online/online_search_provider.dart';
 import '../online/cover_proxy.dart';

@@ -50,6 +50,7 @@ import '../../pages/feedback/feedback_page.dart';
 import '../../pages/about/about_page.dart';
 import '../../pages/leaderboard/leaderboard_page.dart';
 import '../../pages/plugin/plugin_page.dart';
+import '../../pages/plugin/plugin_test_page.dart';
 import '../../pages/playlist/playlists_page.dart';
 import '../../pages/download/download_page.dart';
 import '../../pages/download/download_move_page.dart';
@@ -383,6 +384,14 @@ final appRouter = GoRouter(
       path: '/plugin-manage',
       pageBuilder: (context, state) =>
           _coverPage(context, (_) => const PluginPage(), key: state.pageKey),
+    ),
+    GoRoute(
+      path: '/plugin-test/:id',
+      pageBuilder: (context, state) => _coverBackPage(
+        context,
+        (_) => PluginTestPage(pluginId: state.pathParameters['id'] ?? ''),
+        key: state.pageKey,
+      ),
     ),
     GoRoute(
       path: '/nav-manage',

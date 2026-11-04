@@ -188,132 +188,6 @@ class _TrackTabState extends ConsumerState<_TrackTab>
             }
             final item = _queueItem(i);
             final isFav = item != null && favorites.contains(item.path);
-            final cloudItem = e.cloudItem;
-            if (cloudItem != null) {
-              // 网盘条目：无封面无专辑，subtitle 展示解析歌手（缺省为盘名）。
-              // 头部元数据预探命中时补内嵌封面与时长（无则维持原样）。
-              // 播放时同样送出封面飞行动画（无图时飞行占位封面）。
-              final cloudMeta = ref.watch(
-                cloudHeadMetaProvider,
-              )[cloudItem.path];
-              return _stagger.wrap(
-                i,
-                _rowShell(
-                  i,
-                  cloudItem.path,
-                  Builder(
-                    builder: (rowContext) {
-                      BuildContext? coverCtx;
-                      return PressableScale(
-                        child: CoverRow(
-                          background: themeTintOrNull(ref, 'sr.item'),
-                          cover: Builder(
-                            builder: (c) {
-                              coverCtx = c;
-                              return OnlineCover(
-                                url: cloudItem.coverUrl,
-                                filePath: cloudMeta?.coverPath,
-                                size: m.songCover,
-                                radius: m.songRadius,
-                              );
-                            },
-                          ),
-                          title: highlightedText(
-                            cloudItem.title,
-                            q,
-                            scheme.primary,
-                            maxLines: 1,
-                            style: TextStyle(
-                              fontSize: m.titleSize,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          subtitle: Text(
-                            [
-                              cloudItem.artist,
-                              cloudItem.album,
-                              if (cloudMeta?.durationSecs != null)
-                                _fmtDuration(cloudMeta!.durationSecs!),
-                            ].where((x) => x.isNotEmpty).join(' · '),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: m.subtitleSize,
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ),
-                          verticalPadding: m.vPad,
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              PressableScale(
-                                pressScale: 0.88,
-                                child: IconButton(
-                                  icon: Icon(
-                                    isFav
-                                        ? Icons.favorite
-                                        : Icons.favorite_border,
-                                    size: 20,
-                                    color: isFav
-                                        ? scheme.primary
-                                        : scheme.onSurfaceVariant,
-                                  ),
-                                  tooltip: tr('收藏'),
-                                  onPressed: () => _toggleFavorite(i),
-                                ),
-                              ),
-                              PressableScale(
-                                pressScale: 0.88,
-                                child: IconButton(
-                                  icon: const Icon(Icons.more_horiz, size: 22),
-                                  color: scheme.onSurfaceVariant,
-                                  tooltip: tr('更多'),
-                                  onPressed: () => _openActions(i),
-                                ),
-                              ),
-                              // 来源标与时长上下叠放（收藏页同款行尾）
-                              SongTrailingMeta(
-                                path: cloudItem.path,
-                                isOnline: true,
-                                durationText:
-                                    cloudMeta?.durationSecs != null
-                                        ? _fmtDuration(cloudMeta!.durationSecs!)
-                                        : null,
-                                fontSize: m.subtitleSize,
-                              ),
-                            ],
-                          ),
-                          onLongPress: () => _openActions(i),
-                          onTap: () async {
-                            try {
-                              final from = _coverSourceRect(
-                                rowContext,
-                                coverCtx,
-                              );
-                              _play(i);
-                              if (from == null) return;
-                              if (!await FlyingCover.instance.waitTargetReady())
-                                return;
-                              await FlyingCover.instance.launch(
-                                fromRect: from,
-                                songPath: cloudItem.path,
-                                networkUrl: cloudItem.coverUrl,
-                                // 网盘条目无 URL 封面：预探命中的内嵌封面
-                                // 本地路径作为飞行源，否则动画只能用占位块
-                                thumbPath: cloudMeta?.coverPath,
-                                radius: m.songRadius,
-                              );
-                            } catch (e) {
-                              AppLog.debug('search', '封面飞入动画失败: $e');
-                            }
-                          },
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              );
-            }
             final r = e.pluginResult!;
             return _stagger.wrap(
               i,
@@ -455,15 +329,6 @@ class _TrackTabState extends ConsumerState<_TrackTab>
 extension _TrackTabActions on _TrackTabState {
   List<PluginSource> _plugins() => ref.read(pluginManagerProvider).sources;
 
-  /// 秒 → m:ss（超 1 小时 h:mm:ss）。
-  String _fmtDuration(int secs) {
-    final h = secs ~/ 3600;
-    final m = (secs % 3600) ~/ 60;
-    final s = secs % 60;
-    final mm = h > 0 ? m.toString().padLeft(2, '0') : '$m';
-    return '${h > 0 ? '$h:' : ''}$mm:${s.toString().padLeft(2, '0')}';
-  }
-
   Future<void> _search(String q, String hash) async {
     final src = widget.source;
     setState(() {
@@ -475,7 +340,7 @@ extension _TrackTabActions on _TrackTabState {
     if (q.isEmpty) return;
 
     // 链路内多处 await 之后还要读 provider：WidgetRef 在组件销毁后会抛
-    // "Cannot use ref after the widget was disposed"（云盘搜索分支曾踩坑），
+    // "Cannot use ref after the widget was disposed"，
     // 统一在搜索发起前捕获容器，后续一律走容器读取
     final container = ProviderScope.containerOf(context, listen: false);
     final List<_TrackEntry> out = [];
@@ -496,49 +361,6 @@ extension _TrackTabActions on _TrackTabState {
             .toList();
         out.addAll(list.map((s) => _TrackEntry(isLocal: true, localSong: s)));
         container.read(accountApiProvider).reportSearch(q, 'local', list.length);
-      } else if (src.type == _SourceType.cloud) {
-        // 网盘来源：取该盘首个账号凭据做文件名搜索，逐个预构造可播放条目。
-        // 有已选文件夹的账号只遍历选定范围，避免全盘搜索
-        final pid = src.cloudProviderId!;
-        final provider = cloudProviderById(pid);
-        if (provider == null) throw StateError(tr('该网盘暂未支持'));
-        final accounts = await CloudCredentialsStore.instance.accountsFor(pid);
-        if (accounts.isEmpty) throw StateError(tr('网盘账号未绑定或已失效'));
-        final acc = accounts.first;
-        final roots = await CloudFolderSelectionStore.instance.pathsFor(
-          pid,
-          acc.accountId,
-        );
-        // 没选目录默认全部目录：盘侧搜索失败自动回退根目录全盘遍历
-        final files = await cloudKeywordSearchAudio(
-          provider: provider,
-          cred: acc.cred,
-          selectedRoots: roots,
-          keyword: q,
-        );
-        for (final f in files) {
-          final ctx = CloudPlayContext(
-            provider: pid,
-            accountId: acc.accountId,
-            file: f,
-          );
-          // 列表期头部元数据预探调度（内嵌封面/时长）：去重、限并发、失败静默
-          container.read(cloudHeadMetaProvider.notifier).scheduleCloudContext(ctx);
-          final parts = parseCloudFileName(f.name);
-          out.add(
-            _TrackEntry(
-              isLocal: false,
-              cloudItem: cloudPlayQueueItem(
-                ctx,
-                title: parts.title,
-                artist: parts.artist ?? provider.displayName,
-              ),
-            ),
-          );
-        }
-        container
-            .read(accountApiProvider)
-            .reportSearch(q, 'cloud:$pid', files.length);
       } else {
         final engine = await container.read(pluginEngineProvider.future);
         List<PluginSearchResult> items;
@@ -578,7 +400,7 @@ extension _TrackTabActions on _TrackTabState {
     }
     if (!mounted) return;
     if (_searchedHash != hash) return;
-    final online = !src.isLocal && src.type != _SourceType.cloud;
+    final online = !src.isLocal;
     setState(() {
       _results = out;
       _paths = _buildPaths(out);
@@ -601,7 +423,7 @@ extension _TrackTabActions on _TrackTabState {
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore) return;
     final src = widget.source;
-    if (src.isLocal || src.type == _SourceType.cloud) return;
+    if (src.isLocal) return;
     final q = _lastQuery;
     if (q.isEmpty) return;
     final hash = '${src.id}|$q';
@@ -684,8 +506,7 @@ extension _TrackTabActions on _TrackTabState {
     final engine = ref.read(pluginEngineProvider).valueOrNull;
     if (engine == null) {
       return [
-        for (final e in out)
-          e.isLocal ? (e.localSong?.path ?? '') : (e.cloudItem?.path ?? ''),
+        for (final e in out) e.isLocal ? (e.localSong?.path ?? '') : '',
       ];
     }
     final service = PluginSearchService(engine, _plugins());
@@ -693,8 +514,7 @@ extension _TrackTabActions on _TrackTabState {
       for (final e in out)
         e.isLocal
             ? (e.localSong?.path ?? '')
-            : (e.cloudItem?.path ??
-                  service.toQueueItem(e.pluginSource!, e.pluginResult!).path),
+            : service.toQueueItem(e.pluginSource!, e.pluginResult!).path,
     ];
   }
 
@@ -703,12 +523,6 @@ extension _TrackTabActions on _TrackTabState {
     final e = _results[index];
     if (e.isLocal) {
       ref.read(libraryProvider.notifier).playList([e.localSong!], 0);
-      return;
-    }
-    // 网盘条目：预构造的 QueueItem 直接入队（播放层按 cloud:// 直连）
-    final cloudItem = e.cloudItem;
-    if (cloudItem != null) {
-      ref.read(playerProvider.notifier).playQueue([cloudItem], startIndex: 0);
       return;
     }
     final engine = ref.read(pluginEngineProvider).valueOrNull;
@@ -748,9 +562,6 @@ extension _TrackTabActions on _TrackTabState {
   QueueItem? _queueItem(int index) {
     final e = _results[index];
     if (e.isLocal) return null;
-    // 网盘条目：直接用预构造的 QueueItem（收藏/动作面板通用 path 机制）
-    final cloudItem = e.cloudItem;
-    if (cloudItem != null) return cloudItem;
     final engine = ref.read(pluginEngineProvider).valueOrNull;
     if (engine == null) return null;
     return PluginSearchService(

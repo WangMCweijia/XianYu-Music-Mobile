@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/settings.dart';
-import '../cloud/cloud_registry.dart';
 import '../i18n/i18n.dart';
 import '../plugin/plugin_models.dart';
 import '../plugin/plugin_provider.dart';
@@ -186,21 +185,6 @@ String songSourceLabel(
   String? onlineSongJson,
   String? pluginId,
 }) {
-  // 网盘来源：cloud:// 播放标识或 'cloud:<pid>' 来源值，显示盘名。
-  // cloud:// 曲目 isOnline=false，必须先于本地判定，否则被标成「本地」。
-  final src0 = (source != null && source.trim().isNotEmpty)
-      ? source
-      : (path.startsWith('cloud://')
-          ? 'cloud:${path.substring(7).split('/').first}'
-          : '');
-  if (src0.startsWith('cloud:')) {
-    final pid = src0.substring(6);
-    if (pid.isNotEmpty) {
-      return cloudProviderById(pid)?.displayName ?? tr('网盘');
-    }
-    return tr('网盘');
-  }
-
   if (!isOnline) return tr('本地');
 
   final showReal = ref.watch(settingsProvider

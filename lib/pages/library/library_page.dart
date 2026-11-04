@@ -10,7 +10,6 @@ import '../../src/core/platform_caps.dart';
 import '../../src/core/page_sort_prefs.dart';
 import '../../src/core/pinyin_key.dart';
 import '../../src/core/settings.dart';
-import '../../src/cloud/cloud_registry.dart';
 import '../../src/favorites/favorites_provider.dart';
 import '../../src/library/library_provider.dart';
 import '../../src/navigation/shell.dart';
@@ -461,19 +460,14 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
     // 该状态解耦（见 paneEmbedded 注释）
     final inMusicPane =
         widget.paneEmbedded || ref.watch(landscapeLibraryProvider) != null;
-    // 顶栏「本地/下载」切换行显隐：有启用插件或已绑定网盘才展示（隐藏规则
-    // 延续原「我的」下载入口逻辑，两者皆无时不占顶栏）；横屏面板态同样
+    // 顶栏「本地/下载」切换行显隐：有启用插件才展示（隐藏规则
+    // 延续原「我的」下载入口逻辑，无启用插件时不占顶栏）；横屏面板态同样
     // 展示——切换行垫在面板 tab 行上方，切到下载时 tab 行整行隐藏、右容器
     // 内嵌下载管理内容
     final hasPlugin = ref.watch(
       pluginManagerProvider.select((s) => s.sources.any((p) => p.enabled)),
     );
-    final hasCloud = ref.watch(
-      boundCloudProvidersProvider.select(
-        (a) => a.valueOrNull?.isNotEmpty ?? false,
-      ),
-    );
-    final showSwitch = hasPlugin || hasCloud;
+    final showSwitch = hasPlugin;
     final inDownloadTab = showSwitch && _mainTab == 1;
 
     if (inMusicPane) {

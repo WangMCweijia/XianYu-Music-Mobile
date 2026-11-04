@@ -10,7 +10,7 @@ extension _PluginPageList on _PluginPageState {
     );
   }
 
-  /// 混合行重排：插件行写回 sortOrder，网盘行写回排序位（前方插件数）。
+  /// 插件行重排写回 sortOrder。
   /// onReorderItem 已校正移除项对 newIndex 的偏移，无需再手动 -=1。
   void _onReorder(int oldIndex, int newIndex) {
     if (_query.trim().isNotEmpty) return;
@@ -25,31 +25,7 @@ extension _PluginPageList on _PluginPageState {
     final moved = rows.removeAt(oldIndex);
     rows.insert(newIndex, moved);
 
-    final pluginIds = <String>[];
-    for (final row in rows) {
-      final p = row.plugin;
-      if (p != null) pluginIds.add(p.id);
-    }
-    final cloudIndexes = <String, int>{};
-    var pluginCount = 0;
-    for (final row in rows) {
-      if (row.plugin != null) {
-        pluginCount++;
-      } else {
-        cloudIndexes[row.cloudProviderId!] = pluginCount;
-      }
-    }
+    final pluginIds = [for (final row in rows) row.plugin.id];
     unawaited(ref.read(pluginManagerProvider.notifier).reorder(pluginIds));
-    for (final e in cloudIndexes.entries) {
-      unawaited(PluginPreferences.setCloudSourcePref(e.key, sortIndex: e.value));
-    }
-    setState(() {
-      for (final e in cloudIndexes.entries) {
-        _cloudPrefs[e.key] = CloudSourcePref(
-          enabled: _cloudPrefs[e.key]?.enabled ?? true,
-          sortIndex: e.value,
-        );
-      }
-    });
   }
 }

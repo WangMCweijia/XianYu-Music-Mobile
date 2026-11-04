@@ -20,15 +20,8 @@ import '../../src/widgets/floating_search_bar.dart';
 import '../../src/widgets/landscape_page_fade.dart';
 import '../../src/widgets/press_scale.dart';
 import '../../src/i18n/i18n.dart';
-import '../../src/cloud/cloud_registry.dart';
-import '../../src/cloud/cloud_types.dart';
 import '../../src/responsive/landscape.dart';
 import '../about/about_page.dart';
-import '../account/account_page.dart';
-import '../cloud/cloud_bind_page.dart';
-import '../cloud/cloud_folder_picker_page.dart';
-import '../cloud/cloud_password_login_page.dart';
-import '../cloud/cloud_webview_fields_login_page.dart';
 import '../feedback/feedback_page.dart';
 import '../tools/audio_convert_page.dart';
 import 'batch_rename_page.dart';
@@ -37,7 +30,6 @@ import '../tools/qmc_decrypt_page.dart';
 import '../plugin/plugin_page.dart';
 import '../theme/theme_center_page.dart';
 import '../wallpaper/wallpaper_center_page.dart';
-import 'account_settings_page.dart';
 import 'nav_manage_page.dart';
 import 'settings_category_page.dart';
 
@@ -95,8 +87,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> with HideMiniBar {
     '/nav-manage': '/settings/appearance',
     '/theme': '/settings/appearance',
     '/wallpaper': '/settings/appearance',
-    '/cloud': '/settings/account',
-    '/account': '/settings/account',
     '/audio-convert': '/settings/tools',
     '/audio-trim': '/settings/tools',
     '/qmc-decrypt': '/settings/tools',
@@ -490,7 +480,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> with HideMiniBar {
     List<(String, List<_CategoryEntry>)> groups,
   ) {
     final sel =
-        ref.watch(landscapeSettingsCategoryProvider) ?? '/settings/account';
+        ref.watch(landscapeSettingsCategoryProvider) ?? '/settings/general';
     final detail = _detailFor(sel);
     // 悬浮顶栏口径：左列头部与右面板标题走竖屏同款玻璃胶囊形态
     final floating = ref.watch(
@@ -502,8 +492,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> with HideMiniBar {
       '/theme' => tr('主题中心'),
       '/wallpaper' => tr('壁纸中心'),
       // 以下不在左列分组（由面板内入口打开），标题在此兜底
-      '/account' => tr('账号与安全'),
-      '/cloud' => tr('网盘'),
       '/audio-convert' => tr('音频格式转换'),
       '/audio-trim' => tr('音频剪辑'),
       '/qmc-decrypt' => tr('QMC 文件解密'),
@@ -920,53 +908,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> with HideMiniBar {
     );
   }
 
-  /// 参数化子面板的前缀标题：sel 带参数（/cloud-login/xxx），switch 精确
-  /// 匹配不到，按前缀兜底
-  String? _prefixTitle(String sel) {
-    if (sel.startsWith('/cloud-login/')) return tr('添加账号');
-    if (sel.startsWith('/cloud-folders/')) return tr('选择文件夹');
-    return null;
-  }
+  /// 参数化子面板的前缀标题：sel 带参数时 switch 精确匹配不到，按前缀兜底
+  String? _prefixTitle(String sel) => null;
 
-  /// 上级面板：先精确表，再参数化前缀（登录/选文件夹都归属网盘面板）
-  String? _parentOf(String sel) {
-    final exact = _panelParent[sel];
-    if (exact != null) return exact;
-    if (sel.startsWith('/cloud-login/') ||
-        sel.startsWith('/cloud-folders/')) {
-      return '/cloud';
-    }
-    return null;
-  }
+  /// 上级面板：精确表
+  String? _parentOf(String sel) => _panelParent[sel];
 
   Widget? _detailFor(String path) {
-    // 参数化子面板：网盘登录 / 选择文件夹（provider、账号编码在 sel 里，
-    // 由网盘面板内入口写入）
-    if (path.startsWith('/cloud-login/')) {
-      final providerId = path.split('/')[2];
-      final p = cloudProviderById(providerId);
-      // 自绘账密 + WebView 页内提交范式（迅雷）用专用登录页。
-      if (p?.loginKind == CloudLoginKind.webviewFields) {
-        return CloudWebviewFieldsLoginPage(
-          providerId: providerId,
-          embedded: true,
-        );
-      }
-      return CloudPasswordLoginPage(
-        providerId: providerId,
-        embedded: true,
-      );
-    }
-    if (path.startsWith('/cloud-folders/')) {
-      final uri = Uri.parse(path);
-      return CloudFolderPickerPage(
-        providerId: uri.pathSegments[1],
-        accountId: uri.queryParameters['account'] ?? '',
-        embedded: true,
-      );
-    }
     return switch (path) {
-      '/settings/account' => const AccountSettingsPage(embedded: true),
       '/settings/general' => const SettingsCategoryPage(
         category: SettingsCategory.general,
         embedded: true,
@@ -1013,11 +962,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> with HideMiniBar {
       '/wallpaper' => const WallpaperCenterPage(embedded: true),
       '/feedback' => const FeedbackPage(embedded: true),
       '/about' => const AboutPage(embedded: true),
-      // 网盘绑定 / 账号与安全：横屏改挂右面板容器（导航栏管理同款），
-      // 不再推全屏路由
-      '/cloud' => const CloudBindPage(embedded: true),
-      '/account' => const AccountPage(panelEmbedded: true),
-      // 工具子页：同上，横屏改挂右面板容器
+      // 工具子页：横屏改挂右面板容器
       '/audio-convert' => const AudioConvertPage(embedded: true),
       '/audio-trim' => const AudioTrimPage(embedded: true),
       '/qmc-decrypt' => const QmcDecryptPage(embedded: true),
@@ -1092,17 +1037,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> with HideMiniBar {
   );
 
   static List<(String, List<_CategoryEntry>)> get _groups => [
-    (
-      tr('账号'),
-      [
-        _CategoryEntry(
-          tr('账号'),
-          Icons.account_circle_outlined,
-          tr('服务端设置、手动同步、自动同步'),
-          '/settings/account',
-        ),
-      ],
-    ),
     (
       tr('偏好'),
       [
@@ -1373,21 +1307,6 @@ class _SearchResultTile extends StatelessWidget {
 }
 
 const _settingsSearchItems = <_SearchItem>[
-  _SearchItem(
-    label: '账号',
-    section: '设置分类',
-    path: '/settings/account',
-    categoryName: '账号',
-    isCategory: true,
-    keywords: '账户 登录 服务端',
-  ),
-  _SearchItem(
-    label: '网盘',
-    section: '账号',
-    path: '/cloud',
-    categoryName: '网盘账号绑定',
-    keywords: '网盘 百度 阿里 夸克 UC 天翼 迅雷 123 PikPak 蓝奏 微云 绑定 分享链接 导入',
-  ),
   _SearchItem(
     label: '常规',
     section: '设置分类',
@@ -2037,83 +1956,5 @@ const _settingsSearchItems = <_SearchItem>[
     path: '/settings/advanced',
     categoryName: '高级设置',
     keywords: '返回 手势 预测',
-  ),
-
-  _SearchItem(
-    label: '账号状态',
-    section: '账号状态',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '登录 用户 资料 退出',
-  ),
-  _SearchItem(
-    label: '服务器 API',
-    section: '服务端设置',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '后端 地址 服务器 根地址',
-  ),
-  _SearchItem(
-    label: '服务器密钥',
-    section: '服务端设置',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '密钥 签名 签名密钥',
-  ),
-  _SearchItem(
-    label: '上传歌单',
-    section: '上传',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '同步 云端 歌单',
-  ),
-  _SearchItem(
-    label: '上传收藏',
-    section: '上传',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '同步 云端 收藏',
-  ),
-  _SearchItem(
-    label: '上传插件',
-    section: '上传',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '同步 插件',
-  ),
-  _SearchItem(
-    label: '上传本地设置',
-    section: '上传',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '同步 设置 偏好',
-  ),
-  _SearchItem(
-    label: '手动同步',
-    section: '手动同步',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '上传 下载 云端 同步',
-  ),
-  _SearchItem(
-    label: '启用自动同步',
-    section: '自动同步',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '定时 后台 同步',
-  ),
-  _SearchItem(
-    label: '同步间隔',
-    section: '自动同步',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '小时 分钟 自动 间隔',
-  ),
-  _SearchItem(
-    label: '繁忙延后上限',
-    section: '自动同步',
-    path: '/settings/account',
-    categoryName: '账号',
-    keywords: '繁忙 延后 延迟',
   ),
 ];

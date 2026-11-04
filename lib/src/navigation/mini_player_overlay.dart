@@ -98,9 +98,7 @@ class _MiniPlayerOverlayState extends ConsumerState<MiniPlayerOverlay> {
     '/search',
     '/home/toplists',
     '/home/recommend-sheets',
-    '/account',
     '/leaderboard',
-    '/scan',
   };
 
   static bool _routeHidesBarOnly(String path) =>
@@ -341,7 +339,6 @@ class _MiniPlayerOverlayState extends ConsumerState<MiniPlayerOverlay> {
                 NavBarPosition.bottom) !=
             NavBarPosition.bottom);
 
-    final accountOpen = landscape && ref.watch(landscapeAccountOpenProvider);
 
     final playerOpen = playerOpenNotifier.value;
 
@@ -424,7 +421,6 @@ class _MiniPlayerOverlayState extends ConsumerState<MiniPlayerOverlay> {
     _returnLeft = actualLeft;
     _returnTop = actualTop;
 
-    if (accountOpen) return const SizedBox.shrink();
 
     // 播放页在五级模型中高于播放条：推入时条立即让位（播放页物理盖过，
     // 无需渐隐）；返回露出时走 240ms 渐变

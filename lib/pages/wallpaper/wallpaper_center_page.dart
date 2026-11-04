@@ -7,10 +7,8 @@ import 'dart:ui' as ui;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import '../../src/core/application_logger.dart';
@@ -28,7 +26,6 @@ import '../../src/navigation/routes.dart' show coverPageRoute;
 import '../../src/navigation/shell.dart';
 import '../../src/widgets/custom_background.dart';
 import '../../src/widgets/glass_appbar.dart';
-import '../../src/widgets/sheet_dialog.dart';
 import '../../src/widgets/app_toast.dart';
 import '../../src/i18n/i18n.dart';
 import '../../src/widgets/press_scale.dart';
@@ -58,7 +55,7 @@ class _WallpaperCenterPageState extends ConsumerState<WallpaperCenterPage>
   bool? _lastLoggedIn;
 
   TabController _buildTab(bool loggedIn) =>
-      TabController(length: loggedIn ? 4 : 1, vsync: this);
+      TabController(length: loggedIn ? 3 : 1, vsync: this);
 
   PreferredSizeWidget get _tabBar => TabBar(
     controller: _tab,
@@ -70,7 +67,6 @@ class _WallpaperCenterPageState extends ConsumerState<WallpaperCenterPage>
     tabs: [
       if (_lastLoggedIn == true) ...[
         Tab(text: tr('壁纸广场')),
-        Tab(text: tr('我的上传')),
         Tab(text: tr('我的下载')),
       ],
       Tab(text: tr('自定义壁纸')),
@@ -125,7 +121,6 @@ class _WallpaperCenterPageState extends ConsumerState<WallpaperCenterPage>
                 children: [
                   if (_lastLoggedIn == true) ...[
                     _WallpaperBrowseTab(topInset: topInset),
-                    _MyUploadsTab(topInset: topInset),
                     _MyDownloadsTab(topInset: topInset),
                   ],
                   CustomWallpaperEditor(topInset: topInset),
@@ -165,7 +160,6 @@ class _WallpaperCenterPageState extends ConsumerState<WallpaperCenterPage>
                 children: [
                   if (_lastLoggedIn == true) ...[
                     _WallpaperBrowseTab(topInset: topInset),
-                    _MyUploadsTab(topInset: topInset),
                     _MyDownloadsTab(topInset: topInset),
                   ],
                   CustomWallpaperEditor(topInset: topInset),

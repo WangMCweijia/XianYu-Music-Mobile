@@ -34,18 +34,7 @@ import '../../pages/recent/recent_page.dart';
 import '../../pages/settings/settings_page.dart';
 import '../../pages/settings/settings_category_page.dart';
 import '../../pages/settings/nav_manage_page.dart';
-import '../../pages/settings/account_settings_page.dart';
-import '../../pages/cloud/cloud_bind_page.dart';
-import '../../pages/cloud/cloud_browser_page.dart';
-import '../../pages/cloud/cloud_disk_page.dart';
-import '../../pages/cloud/cloud_folder_picker_page.dart';
-import '../../pages/cloud/cloud_link_import_page.dart';
-import '../../pages/cloud/cloud_password_login_page.dart';
-import '../../pages/cloud/cloud_qrcode_login_page.dart';
-import '../../pages/cloud/cloud_webview_fields_login_page.dart';
-import '../../pages/cloud/cloud_webview_login_page.dart';
 import '../../pages/player/player_page.dart';
-import '../../pages/account/account_page.dart';
 import '../../pages/feedback/feedback_page.dart';
 import '../../pages/about/about_page.dart';
 import '../../pages/leaderboard/leaderboard_page.dart';
@@ -62,8 +51,6 @@ import '../../pages/tools/audio_trim_page.dart';
 import '../../pages/wallpaper/wallpaper_center_page.dart';
 import '../../pages/theme/theme_center_page.dart';
 import '../../pages/recognize/recognize_page.dart';
-import '../../pages/scan/scan_page.dart';
-import '../../pages/scan/tv_login_confirm_page.dart';
 import '../../pages/deeplink/song_share_bridge.dart';
 import '../../pages/debug/debug_page.dart';
 import 'shell.dart';
@@ -218,122 +205,11 @@ final appRouter = GoRouter(
       ),
     ),
     GoRoute(
-      path: '/scan',
-      pageBuilder: (context, state) =>
-          _coverBackPage(context, (_) => const ScanPage(), key: state.pageKey),
-    ),
-    GoRoute(
-      path: '/tv-login-confirm',
-      pageBuilder: (context, state) => _coverBackPage(context, (_) {
-        final extra = state.extra;
-        final code = (extra is Map ? extra['code'] : null) as String? ?? '';
-        final info = (extra is Map ? extra['info'] : null) as TvLoginScanInfo?;
-        return TvLoginConfirmPage(
-          code: code,
-          info: info ?? const TvLoginScanInfo(),
-        );
-      }, key: state.pageKey),
-    ),
-    GoRoute(
       path: '/shareBridge',
       pageBuilder: (context, state) => _coverBackPage(
         context,
         (_) => const SongShareBridgePage(),
         key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/account',
-      pageBuilder: (context, state) =>
-          _coverPage(context, (_) => const AccountPage(), key: state.pageKey),
-    ),
-    GoRoute(
-      path: '/settings/account',
-      pageBuilder: (context, state) => _coverPage(
-        context,
-        (_) => const AccountSettingsPage(),
-        key: state.pageKey,
-        location: state.matchedLocation,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud',
-      pageBuilder: (context, state) => _coverPage(
-        context,
-        (_) => const CloudBindPage(),
-        key: state.pageKey,
-        location: state.matchedLocation,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud/webview-login/:id',
-      pageBuilder: (context, state) => _coverBackPage(
-        context,
-        (_) =>
-            CloudWebviewLoginPage(providerId: state.pathParameters['id'] ?? ''),
-        key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud/fields-webview-login/:id',
-      pageBuilder: (context, state) => _coverBackPage(
-        context,
-        (_) => CloudWebviewFieldsLoginPage(
-          providerId: state.pathParameters['id'] ?? '',
-        ),
-        key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud/password-login/:id',
-      pageBuilder: (context, state) => _coverBackPage(
-        context,
-        (_) => CloudPasswordLoginPage(
-          providerId: state.pathParameters['id'] ?? '',
-        ),
-        key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud/qrcode-login/:id',
-      pageBuilder: (context, state) => _coverBackPage(
-        context,
-        (_) =>
-            CloudQrcodeLoginPage(providerId: state.pathParameters['id'] ?? ''),
-        key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud/browser/:id',
-      pageBuilder: (context, state) => _coverBackPage(
-        context,
-        (_) => CloudBrowserPage(
-          providerId: state.pathParameters['id'] ?? '',
-          accountId: state.uri.queryParameters['account'],
-        ),
-        key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud/folder-picker/:id',
-      pageBuilder: (context, state) => _coverBackPage(
-        context,
-        (_) => CloudFolderPickerPage(
-          providerId: state.pathParameters['id'] ?? '',
-          accountId: state.uri.queryParameters['account'] ?? '',
-          // pick=1：歌单网盘文件夹导入等场景的选取模式，确认后带值出栈
-          returnSelection: state.uri.queryParameters['pick'] == '1',
-        ),
-        key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud/link-import',
-      pageBuilder: (context, state) => _coverPage(
-        context,
-        (_) => const CloudLinkImportPage(),
-        key: state.pageKey,
-        location: state.matchedLocation,
       ),
     ),
     GoRoute(
@@ -449,14 +325,6 @@ final appRouter = GoRouter(
       pageBuilder: (context, state) => _coverBackPage(
         context,
         (_) => const HideShellChrome(child: DownloadPage()),
-        key: state.pageKey,
-      ),
-    ),
-    GoRoute(
-      path: '/cloud-disk',
-      pageBuilder: (context, state) => _coverBackPage(
-        context,
-        (_) => const HideShellChrome(child: CloudDiskPage()),
         key: state.pageKey,
       ),
     ),
@@ -662,14 +530,6 @@ final Map<String, LandscapeLibraryNavItem> landscapeLibraryNavById = {
       shortTitle: tr('本地'),
       icon: Icons.library_music_outlined,
       paneIndex: 0,
-    ),
-    LandscapeLibraryNavItem(
-      navId: 'lib-cloud',
-      title: tr('网盘音乐'),
-      shortTitle: tr('网盘'),
-      icon: Icons.cloud_outlined,
-      paneIndex: 1,
-      requiresCloud: true,
     ),
     LandscapeLibraryNavItem(
       navId: 'lib-favorites',

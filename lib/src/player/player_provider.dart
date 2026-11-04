@@ -16,12 +16,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../auth/account_api.dart';
-import '../cloud/cloud_credentials_store.dart';
-import '../cloud/cloud_filename.dart';
-import '../cloud/cloud_head_meta.dart';
-import '../cloud/cloud_registry.dart';
-import '../cloud/cloud_types.dart';
-import '../cloud/direct_link_cache.dart';
 import '../core/application_logger.dart';
 import '../core/app_http.dart';
 import '../core/diagnostics.dart';
@@ -70,7 +64,6 @@ part 'player_provider.quality.dart';
 part 'player_provider.online.dart';
 part 'player_provider.source.dart';
 part 'player_provider.cast.dart';
-part 'player_provider.cloud.dart';
 part 'player_provider.types.dart';
 part 'player_provider.media_handler.dart';
 
@@ -831,23 +824,6 @@ class PlayerNotifier extends StateNotifier<PlaybackState>
         }
         if (epoch != _playEpoch) return;
         await _playOnline(
-          item,
-          startAtSecs: startAtSecs,
-          startPlayback: !continueStatsSession || wasPlaying,
-        );
-        if (epoch != _playEpoch) return;
-      } else if (item.path.startsWith('cloud://')) {
-        // 网盘曲目：解析直链后复用在线 URL 管线（代理/DSP/ExoPlayer 全复用）
-        await _stopExclusive();
-        if (epoch != _playEpoch) return;
-        try {
-          await _player.stop();
-        } catch (e) {
-          AppLog.warn('player', '播放器停止失败: $e');
-        }
-        if (epoch != _playEpoch) return;
-        state = state.copyWith(resolving: true);
-        await _playCloud(
           item,
           startAtSecs: startAtSecs,
           startPlayback: !continueStatsSession || wasPlaying,

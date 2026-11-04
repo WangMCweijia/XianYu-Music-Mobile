@@ -16,7 +16,6 @@ import '../core/settings.dart';
 import '../core/system_ui.dart';
 import '../theme/theme_icon.dart';
 import '../theme/theme_tint.dart';
-import '../auth/auth_provider.dart';
 import '../widgets/glass_settings.dart';
 import '../widgets/landscape_page_fade.dart';
 import 'landscape_tab_switcher.dart';
@@ -25,8 +24,6 @@ import '../widgets/orientation_transition.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/predictive_dialog_route.dart';
 import '../notifications/notification_service.dart';
-import '../sync/auto_sync.dart';
-import '../sync/sync_provider.dart' show syncProvider;
 import '../widgets/mini_player_bar.dart' show LiveLiquidSurface;
 import '../widgets/page_search_bar.dart';
 import '../widgets/press_scale.dart';
@@ -39,8 +36,6 @@ import '../../pages/library/song_list_page.dart';
 import '../../pages/home/online_detail_page.dart';
 import '../library/library_provider.dart' show Song;
 import '../player/player_provider.dart' show QueueItem;
-import '../../pages/cloud/cloud_disk_page.dart';
-import '../cloud/cloud_registry.dart';
 import '../../pages/favorites/favorites_page.dart';
 import '../../pages/recent/recent_page.dart';
 import '../../pages/playlist/playlists_page.dart';
@@ -48,12 +43,9 @@ import '../widgets/floating_search_bar.dart';
 import '../widgets/skin_icon.dart';
 import '../widgets/glass_appbar.dart' show GlassTopBar;
 import '../widgets/landscape_top_bar.dart';
-import '../../pages/account/account_page.dart';
 import '../../pages/download/download_page.dart';
 import '../../pages/settings/folder_picker_page.dart';
 import '../../pages/remote/remote_library_page.dart';
-import '../../pages/cloud/cloud_bind_page.dart';
-import '../../pages/cloud/cloud_folder_picker_page.dart';
 import '../../pages/home/daily_recommend_page.dart';
 import '../../pages/home/top_lists_page.dart';
 import '../../pages/home/recommend_sheets_page.dart';
@@ -105,8 +97,6 @@ final landscapeLibrarySearchFocusProvider = Provider<FocusNode>((ref) {
   return node;
 });
 
-final landscapeAccountOpenProvider = StateProvider<bool>((ref) => false);
-
 final landscapeDownloadOpenProvider = StateProvider<bool>((ref) => false);
 
 final landscapePlaylistOpenProvider = StateProvider<String?>((ref) => null);
@@ -135,14 +125,6 @@ class LandscapeOnlineDetail extends LandscapeDetail {
   final OnlineDetailArgs args;
 }
 
-/// 网盘歌手/专辑分组下钻
-class LandscapeCloudGroupDetail extends LandscapeDetail {
-  const LandscapeCloudGroupDetail({required this.title, required this.items});
-
-  final String title;
-  final List<QueueItem> items;
-}
-
 /// 本地扫描目录勾选（文件夹页「添加目录」下钻）
 class LandscapeFolderPickerDetail extends LandscapeDetail {
   const LandscapeFolderPickerDetail();
@@ -153,29 +135,12 @@ class LandscapeRemoteLibraryDetail extends LandscapeDetail {
   const LandscapeRemoteLibraryDetail();
 }
 
-/// 音源管理（文件夹页/网盘页/网盘浏览器入口下钻）
-class LandscapeCloudManageDetail extends LandscapeDetail {
-  const LandscapeCloudManageDetail();
-}
-
-/// 网盘已选文件夹管理（文件夹页网盘树「选择文件夹」下钻）
-class LandscapeCloudPickerDetail extends LandscapeDetail {
-  const LandscapeCloudPickerDetail({
-    required this.providerId,
-    required this.accountId,
-  });
-
-  final String providerId;
-  final String accountId;
-}
-
 final landscapeDetailProvider = StateProvider<LandscapeDetail?>((ref) => null);
 
 final musicLibraryPageKeys = List<GlobalKey>.generate(6, (_) => GlobalKey());
 
 final landscapePaneOpenProvider = Provider<bool>((ref) {
-  return ref.watch(landscapeAccountOpenProvider) ||
-      ref.watch(landscapeDownloadOpenProvider) ||
+  return ref.watch(landscapeDownloadOpenProvider) ||
       ref.watch(landscapeDetailProvider) != null ||
       ref.watch(landscapePlaylistOpenProvider) != null ||
       ref.watch(landscapeSearchOpenProvider) ||
@@ -185,7 +150,6 @@ final landscapePaneOpenProvider = Provider<bool>((ref) {
 final landscapeSettingsCategoryProvider = StateProvider<String?>((ref) => null);
 
 const Set<String> kLandscapeSettingPaths = <String>{
-  '/settings/account',
   '/settings/general',
   '/settings/appearance',
   '/settings/lyrics',
@@ -279,25 +243,9 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   void initState() {
     super.initState();
-    ref.read(autoSyncProvider).start();
     // 启动即静默预热排行榜：进个人中心点统计卡时直接命中缓存，
     // 不再先闪一屏空骨架（预热失败/未完成时页面行为与以前一致）
     unawaited(prefetchLeaderboard(ref));
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // 对齐桌面端：登录同步只在登录态发生 false→true 变化时触发。
-      // 先等凭据恢复落定再挂监听——启动时恢复的旧会话不再全量对账，
-      // 避免每次打开 app 都对服务端做一轮推拉（防污染 + 省流量）
-      await ref.read(authProvider.notifier).whenRestored;
-      if (!mounted) return;
-      ref.listenManual<bool>(authProvider.select((s) => s.user != null), (
-        prev,
-        next,
-      ) {
-        if (prev == false && next == true && mounted) {
-          ref.read(syncProvider.notifier).syncOnLoginSuccess(context);
-        }
-      });
-    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_notificationsChecked) return;
       _notificationsChecked = true;
@@ -335,16 +283,6 @@ class _AppShellState extends ConsumerState<AppShell> {
     final hiddenCount = ref.watch(navBarHiddenProvider);
     final isSubPage = hiddenCount > 0 || GoRouter.of(context).canPop();
 
-    // 会话失效弹窗挂常驻壳层：失效由任意页面的鉴权请求触发（同步/统计/
-    // 榜单心跳等），此前只在账号页 build 里兜底，其余页面只会静默变未
-    // 登录态，点进账号页才知道原因。根导航弹窗保证任意页面即时可见
-    ref.listen<AuthState>(authProvider, (prev, next) {
-      if ((prev?.sessionExpired ?? false) || !next.sessionExpired) return;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _showSessionExpiredDialog();
-      });
-    });
-
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: (PointerDownEvent e) {
@@ -362,38 +300,6 @@ class _AppShellState extends ConsumerState<AppShell> {
         ),
       ),
     );
-  }
-
-  // 「登录」仅在不在账号页时才 push，避免账号页上重复叠页
-  Future<void> _showSessionExpiredDialog() async {
-    final router = GoRouter.of(context);
-    await showPredictiveDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text(tr('登录状态已失效')),
-        content: Text(tr('登录状态已失效，请重新登录。')),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text(tr('确认')),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              if (_ShellScaffoldState._routerTopPath(
-                    router.routerDelegate.currentConfiguration,
-                  ) !=
-                  '/account') {
-                router.push('/account');
-              }
-            },
-            child: Text(tr('登录')),
-          ),
-        ],
-      ),
-    );
-    if (mounted) ref.read(authProvider.notifier).consumeSessionExpired();
   }
 }
 
@@ -585,9 +491,7 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
 
   static const Set<String> _noRotateRedirectPaths = <String>{
     '/player',
-    '/scan',
     '/recognize',
-    '/tv-login-confirm',
     '/shareBridge',
   };
 
@@ -634,7 +538,6 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
       final searchOpen = ref.read(landscapeSearchOpenProvider);
       final searchResults = ref.read(landscapeSearchResultsProvider);
       final download = ref.read(landscapeDownloadOpenProvider);
-      final account = ref.read(landscapeAccountOpenProvider);
       final content = ref.read(landscapeContentPathProvider);
       final detail = ref.read(landscapeDetailProvider);
       void closeAll() {
@@ -642,7 +545,6 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
         ref.read(landscapeSearchOpenProvider.notifier).state = false;
         ref.read(landscapeSearchResultsProvider.notifier).state = false;
         ref.read(landscapeDownloadOpenProvider.notifier).state = false;
-        ref.read(landscapeAccountOpenProvider.notifier).state = false;
         ref.read(landscapePlaylistOpenProvider.notifier).state = null;
         ref.read(landscapeContentPathProvider.notifier).state = null;
         ref.read(landscapeDetailProvider.notifier).state = null;
@@ -659,15 +561,17 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
         context.push(category ?? back!);
       } else if (onShell) {
         if (lib != null) {
+          // 索引与 _MusicLibraryPane 面板号对齐（1=网盘已移除，占位）
           const libRoutes = [
             '/library',
-            '/cloud-disk',
+            '',
             '/favorites',
             '/recent',
             '/playlists',
             '/library/folders',
           ];
-          context.push(libRoutes[lib.clamp(0, libRoutes.length - 1)]);
+          final route = libRoutes[lib.clamp(0, libRoutes.length - 1)];
+          if (route.isNotEmpty) context.push(route);
         } else if (searchOpen) {
           context.push(searchResults ? '/search/result' : '/search');
         } else if (content != null) {
@@ -682,33 +586,24 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
               );
             case LandscapeOnlineDetail d:
               context.push('/online-detail', extra: d.args);
-            case LandscapeCloudGroupDetail _:
-              context.push('/cloud-disk');
             case LandscapeFolderPickerDetail _:
               context.push('/library/folders');
             case LandscapeRemoteLibraryDetail _:
               context.push('/remote-library');
-            case LandscapeCloudManageDetail _:
-              context.push('/cloud');
-            case LandscapeCloudPickerDetail d:
-              context.push(
-                '/cloud/folder-picker/${d.providerId}?account=${d.accountId}',
-              );
           }
         } else if (playlist != null) {
           context.push('/playlist/$playlist');
         } else if (download) {
           context.push('/download');
-        } else if (account) {
-          context.push('/account');
         }
       }
       return;
     }
     final path = _routerTopPath(_router.routerDelegate.currentConfiguration);
+    // 索引与 _MusicLibraryPane 面板号对齐（1=网盘已移除，占位）
     const libRoutes = [
       '/library',
-      '/cloud-disk',
+      '',
       '/favorites',
       '/recent',
       '/playlists',
@@ -759,12 +654,6 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
       while (context.canPop()) {
         context.pop();
       }
-    } else if (path == '/account') {
-      _rotateBackPath = path;
-      ref.read(landscapeAccountOpenProvider.notifier).state = true;
-      while (context.canPop()) {
-        context.pop();
-      }
     } else if (path.startsWith('/playlist/')) {
       _rotateBackPath = path;
       ref.read(landscapePlaylistOpenProvider.notifier).state = path
@@ -790,30 +679,6 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
       _rotateBackPath = path;
       ref.read(landscapeDetailProvider.notifier).state =
           const LandscapeRemoteLibraryDetail();
-      while (context.canPop()) {
-        context.pop();
-      }
-    } else if (path == '/cloud') {
-      _rotateBackPath = path;
-      ref.read(landscapeDetailProvider.notifier).state =
-          const LandscapeCloudManageDetail();
-      while (context.canPop()) {
-        context.pop();
-      }
-    } else if (path.startsWith('/cloud/folder-picker/')) {
-      _rotateBackPath = path;
-      // _routerTopPath 只含 path 无 query，account 从完整 uri 取
-      final account = _router
-          .routerDelegate
-          .currentConfiguration
-          .uri
-          .queryParameters['account'];
-      ref
-          .read(landscapeDetailProvider.notifier)
-          .state = LandscapeCloudPickerDetail(
-        providerId: path.split('/').last,
-        accountId: account ?? '',
-      );
       while (context.canPop()) {
         context.pop();
       }
@@ -873,8 +738,6 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
 
     final libSel = ref.watch(landscapeLibraryProvider);
 
-    final accountOpen = landscape && ref.watch(landscapeAccountOpenProvider);
-
     final downloadOpen = landscape && ref.watch(landscapeDownloadOpenProvider);
 
     final playlistOpenId = landscape
@@ -901,14 +764,6 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold>
       landPaneTrigger = 'detail:${identityHashCode(landscapeDetail)}';
       landPane = EmbeddedShellScope(
         child: _LandscapeDetailPane(detail: landscapeDetail),
-      );
-    } else if (accountOpen) {
-      landPaneTrigger = 'account';
-      landPane = EmbeddedShellScope(
-        child: _AccountPane(
-          onBack: () =>
-              ref.read(landscapeAccountOpenProvider.notifier).state = false,
-        ),
       );
     } else if (searchOpen) {
       landPaneTrigger = 'search';

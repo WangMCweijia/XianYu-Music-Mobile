@@ -5,7 +5,6 @@ import 'package:flutter/gestures.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../src/cloud/cloud_registry.dart';
 import '../../src/core/app_colors.dart';
 import '../../src/core/haptics.dart';
 import '../../src/core/settings.dart';
@@ -52,7 +51,6 @@ class _NavManagePageState extends ConsumerState<NavManagePage> {
                 ref.watch(settingsProvider).valueOrNull?.navShowPlugins ??
                 false,
             landscape: false,
-            hasCloud: false,
             onReorder: (ids) =>
                 ref.read(settingsProvider.notifier).setNavOrderPortrait(ids),
           ),
@@ -66,7 +64,6 @@ class _NavManagePageState extends ConsumerState<NavManagePage> {
                 ref.watch(settingsProvider).valueOrNull?.navShowPlugins ??
                 false,
             landscape: true,
-            hasCloud: _hasCloud(ref),
             onReorder: (ids) =>
                 ref.read(settingsProvider.notifier).setNavOrderLandscape(ids),
           ),
@@ -110,7 +107,6 @@ class _NavManagePageState extends ConsumerState<NavManagePage> {
                 order: settings?.navOrderPortrait ?? kDefaultNavOrder,
                 showPlugins: showPlugins,
                 landscape: false,
-                hasCloud: false,
                 onReorder: (ids) => ref
                     .read(settingsProvider.notifier)
                     .setNavOrderPortrait(ids),
@@ -121,7 +117,6 @@ class _NavManagePageState extends ConsumerState<NavManagePage> {
                 order: settings?.navOrderLandscape ?? kDefaultNavOrderLandscape,
                 showPlugins: showPlugins,
                 landscape: true,
-                hasCloud: _hasCloud(ref),
                 onReorder: (ids) => ref
                     .read(settingsProvider.notifier)
                     .setNavOrderLandscape(ids),
@@ -167,19 +162,11 @@ class _NavManagePageState extends ConsumerState<NavManagePage> {
     ),
   );
 
-  /// 是否已绑定网盘：「网盘音乐」未绑定时横屏 rail 不出现，管理页同样隐藏
-  bool _hasCloud(WidgetRef ref) => ref.watch(
-    boundCloudProvidersProvider.select(
-      (a) => a.valueOrNull?.isNotEmpty ?? false,
-    ),
-  );
-
   Widget _navGroup(
     BuildContext context, {
     required List<String> order,
     required bool showPlugins,
     required bool landscape,
-    required bool hasCloud,
     required ValueChanged<List<String>> onReorder,
   }) {
     // 横屏表把音乐库项与导航页签合并展示（与 rail 一致）；竖屏表只含页签
@@ -198,7 +185,6 @@ class _NavManagePageState extends ConsumerState<NavManagePage> {
       if (!landscape) continue;
       final lib = landscapeLibraryNavById[id];
       if (lib == null) continue;
-      if (lib.requiresCloud && !hasCloud) continue;
       entries.add((id: id, title: lib.title, icon: lib.icon, optIn: false));
     }
     // 与设置分类页 _CardGroup 同款卡片容器；行间分隔线与 ReorderableListView

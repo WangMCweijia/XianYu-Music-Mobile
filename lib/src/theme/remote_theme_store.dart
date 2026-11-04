@@ -14,14 +14,8 @@ final themeSquareProvider = FutureProvider<List<RemoteTheme>>((ref) async {
   return RemoteTheme.listFrom(data);
 });
 
-/// 我的上传列表（服务端不过滤 status，含待审条目）。
-///
-/// 该 action 必须带弦予号，未登录时没有弦予号：直接返回空列表，
-/// 而不是发一个必然被服务端以 400 拒绝的请求。
-final myThemesProvider = FutureProvider<List<RemoteTheme>>((ref) async {
-  final api = ref.watch(accountApiProvider);
-  final id = api.ciyuanxiId;
-  if (id == null || id.isEmpty) return const <RemoteTheme>[];
-  final data = await api.myThemes(ciyuanxiId: id);
-  return RemoteTheme.listFrom(data);
-});
+/// 我的上传列表：账号/上传功能已整体移除，云端接口已删除，
+/// 恒返回空列表（保留 provider，页面「我的上传」区块按空态展示）。
+final myThemesProvider = FutureProvider<List<RemoteTheme>>(
+  (ref) async => const <RemoteTheme>[],
+);

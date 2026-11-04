@@ -10,8 +10,6 @@ import '../core/application_logger.dart';
 import '../core/rust_init.dart';
 import '../core/settings.dart';
 import '../rust/api.dart' as frb;
-import '../sync/plugin_sync_state.dart';
-import '../sync/sync_trigger.dart';
 import 'plugin_engine.dart';
 import 'plugin_models.dart';
 import 'plugin_store.dart';
@@ -302,7 +300,6 @@ class PluginManager extends StateNotifier<PluginListState> {
     final list = [...state.sources, source];
     await engine.store.saveSources(list);
     state = state.copyWith(sources: list);
-    await PluginSyncState.clearTombstones([source.id]);
     return source;
   }
 
@@ -446,7 +443,6 @@ class PluginManager extends StateNotifier<PluginListState> {
       await engine.destroy(id);
     }
     engine.bakaManager.clearCache(id);
-    SyncTrigger.markDirty(const {SyncTrigger.plugins});
   }
 
   Future<void> setUpdateAvailable(String id, bool value) async {
@@ -476,7 +472,6 @@ class PluginManager extends StateNotifier<PluginListState> {
       }
       engine.bakaManager.clearCache(s.id);
     }
-    SyncTrigger.markDirty(const {SyncTrigger.plugins});
   }
 
   Future<void> remove(String id) async {
@@ -487,7 +482,6 @@ class PluginManager extends StateNotifier<PluginListState> {
     await engine.store.saveSources(list);
     state = state.copyWith(sources: list);
     engine.bakaManager.clearCache(id);
-    SyncTrigger.markDirty(const {SyncTrigger.plugins});
   }
 
   Future<void> reorder(List<String> orderedIds) async {
@@ -504,7 +498,6 @@ class PluginManager extends StateNotifier<PluginListState> {
     final list = sortPluginSources(remapped);
     await engine.store.saveSources(list);
     state = state.copyWith(sources: list);
-    SyncTrigger.markDirty(const {SyncTrigger.plugins});
   }
 
   Future<bool> reload(String id) async {
@@ -538,7 +531,6 @@ class PluginManager extends StateNotifier<PluginListState> {
     state = state.copyWith(sources: list, idAliases: aliases);
     engine.bakaManager.clearCache(oldId);
     if (newSource.id != oldId) engine.bakaManager.clearCache(newSource.id);
-    SyncTrigger.markDirty(const {SyncTrigger.plugins});
   }
 
   /// 更新换 id 后补别名：收藏/播放队列存的旧 pluginId 仍可换算到现行插件
@@ -571,7 +563,6 @@ class PluginManager extends StateNotifier<PluginListState> {
     if (source.isNotEmpty && source.first.enabled) {
       await engine.ensureLoaded(source.first);
     }
-    SyncTrigger.markDirty(const {SyncTrigger.plugins});
   }
 
   Future<void> syncBilibiliCookiesFromVars(

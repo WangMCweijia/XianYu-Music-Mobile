@@ -13,7 +13,6 @@ import '../../src/playlist/playlist_delete.dart';
 import '../../src/playlist/playlist_store.dart';
 import '../../src/plugin/plugin_backup_import.dart';
 import '../../src/share/share_sheet.dart';
-import '../../src/sync/settings_conflict_dialog.dart';
 import '../../src/update/app_update.dart';
 import '../../src/widgets/add_to_playlist_sheet.dart';
 import '../../src/widgets/app_toast.dart';
@@ -24,7 +23,6 @@ import '../../src/widgets/song_actions_sheet.dart';
 import '../../src/widgets/song_info_dialog.dart';
 import '../../src/widgets/user_agreement.dart';
 import '../../src/watch_link/watch_link_provider.dart';
-import '../../pages/account/account_dialogs.dart';
 import '../../src/i18n/i18n.dart';
 import '../../src/widgets/press_scale.dart';
 
@@ -136,26 +134,6 @@ class DebugPage extends ConsumerWidget {
               _CardGroup(
                 children: [
                   _DebugRow(
-                    title: tr('设置同步冲突弹窗'),
-                    subtitle: tr('测试云端设置冲突时的选择弹窗'),
-                    onTap: () => showSettingsConflictDialog(
-                      context: context,
-                      localTime: DateTime.now(),
-                      cloudTime: DateTime.now().subtract(const Duration(hours: 2)),
-                    ),
-                  ),
-                  _DebugRow(
-                    title: tr('资料修改前置确认'),
-                    subtitle: tr('测试修改资料前的次数限制与审核提示'),
-                    onTap: () => showProfileEditGate(
-                      context,
-                      title: tr('更换头像'),
-                      desc: tr('今日剩余修改机会：0 次。头像修改需管理员审核，审核通过后生效。'),
-                      confirmText: tr('知道了'),
-                      blocked: true,
-                    ),
-                  ),
-                  _DebugRow(
                     title: tr('公告展示框'),
                     subtitle: tr('测试公告弹窗显示'),
                     onTap: () => ref
@@ -214,42 +192,6 @@ class DebugPage extends ConsumerWidget {
                         },
                       );
                     },
-                  ),
-                  _DebugRow(
-                    title: tr('修改密码弹窗'),
-                    subtitle: tr('测试修改密码表单弹窗（提交需登录态）'),
-                    onTap: () => showChangePasswordDialog(
-                        context, ref.read(authProvider.notifier)),
-                  ),
-                  _DebugRow(
-                    title: tr('绑定邮箱弹窗'),
-                    subtitle: tr('测试绑定邮箱表单弹窗（提交需登录态）'),
-                    onTap: () => showBindEmailDialog(
-                        context, ref.read(authProvider.notifier)),
-                  ),
-                  _DebugRow(
-                    title: tr('修改昵称弹窗'),
-                    subtitle: tr('测试修改昵称表单弹窗（提交需登录态）'),
-                    onTap: () => showChangeNicknameDialog(
-                        context, ref.read(authProvider.notifier)),
-                  ),
-                  _DebugRow(
-                    title: tr('修改弦予号弹窗'),
-                    subtitle: tr('测试修改弦予号表单弹窗（提交需登录态）'),
-                    onTap: () => showChangeCiyuanxiDialog(
-                        context, ref.read(authProvider.notifier)),
-                  ),
-                  _DebugRow(
-                    title: tr('注销账号弹窗'),
-                    subtitle: tr('测试注销账号确认与验证流程弹窗（提交需登录态）'),
-                    onTap: () => showDeleteAccountDialog(
-                        context, ref.read(authProvider.notifier)),
-                  ),
-                  _DebugRow(
-                    title: tr('忘记密码弹窗'),
-                    subtitle: tr('测试忘记密码找回流程弹窗（提交需服务端）'),
-                    onTap: () => showForgotPasswordDialog(
-                        context, ref.read(authProvider.notifier)),
                   ),
                 ],
               ),

@@ -4,12 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/application_logger.dart';
-import '../core/settings.dart';
 import '../device/device_info.dart' show fetchDeviceInfo;
 import '../rust/api.dart' as frb;
 import 'auth_provider.dart';
 import 'server_models.dart';
-import '../i18n/i18n.dart';
 
 const appVersion = '2.0.6-beta5';
 
@@ -27,6 +25,10 @@ class HotSearchItem {
       );
 }
 
+/// 官方服务端内容接口（公告/协议/更新/热搜/排行榜/主题列表等匿名内容）。
+///
+/// 账号相关能力（登录、注册、资料、设置/收藏/歌单/插件/历史/网盘凭据云同步、
+/// 听歌与行为上报）已随账号体系一并移除；本类不再包含任何个人数据出网路径。
 class AccountApi {
   AccountApi(this._ref);
   final Ref _ref;
@@ -121,26 +123,16 @@ class AccountApi {
 
   /// 内测资格查询（feedback 页使用）：复用启动锁的签名验证链路
   /// （ed25519 验签 + device_id 绑定 + 过期校验 + 本地缓存兜底）。
-  /// 不可信时 fail-closed 返回 (false, false)——修复点：旧实现直接读未签名
-  /// 响应且 `data is! Map` 时放行（fail-open），构成 UI 旁路。
   Future<(bool, bool)> checkBetaAccess() async =>
       await verifyBetaAccess() ?? (false, false);
 
-  /// 内测资格验证（fail-closed，供启动锁使用）：
-  /// 1) 联网请求 check_beta_access 并验签（ed25519，绑定 device_id + 过期时间），
-  ///    验签通过则更新本地缓存；
-  /// 2) 网络失败或响应不可信（无签名/验签失败/设备不匹配/已过期）时回退本地缓存，
-  ///    缓存同样经完整验签；
-  /// 3) 两者皆不可用返回 null，调用方应锁定（无法验证 ≠ 放行）。
+  /// 内测资格验证（fail-closed，供启动锁使用）。
   /// 返回 (allowed, pending)。
   Future<(bool, bool)?> verifyBetaAccess() async {
     final deviceId = (await _auth.deviceId()).trim();
     try {
       final data = await _auth.requestActionList('check_beta_access', {
         'device_id': deviceId,
-        // 账号维度判定：携带登录 token（服务端按账号白名单 + 活跃设备数上限校验；
-        // 未登录/旧客户端为空，服务端回退设备白名单，向后兼容）
-        'token': await _auth.authToken ?? '',
       }, fetchTimeoutMs: 15000);
       if (data is Map) {
         final payload = Map<String, dynamic>.from(data);
@@ -228,14 +220,9 @@ class AccountApi {
     String? allLogs,
     List<String>? images,
   }) async {
-    final user = _auth.currentState.user;
-    final ciyuanxiId = user?.ciyuanxiId?.trim();
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再提交反馈'));
-    }
     final payload = <String, dynamic>{
-      'ciyuanxi_id': ciyuanxiId,
-      'nickname': user?.nickname.trim() ?? '',
+      'ciyuanxi_id': '',
+      'nickname': '',
       'title': title.trim(),
       'content': content.trim(),
       'feedback_type': feedbackType,
@@ -250,157 +237,22 @@ class AccountApi {
     return (data['id'] as num?)?.toInt() ?? 0;
   }
 
-  Future<List<FeedbackItem>> getMyFeedback() async {
-    final user = _auth.currentState.user;
-    final ciyuanxiId = user?.ciyuanxiId?.trim();
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再查看反馈'));
-    }
-    final data = await _action('list_my_feedback', {'ciyuanxi_id': ciyuanxiId});
-    final list = (data['list'] as List?) ?? const [];
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map(FeedbackItem.fromJson)
-        .toList();
-  }
+  /// 账号功能已移除：永远返回空列表。
+  Future<List<FeedbackItem>> getMyFeedback() async => const [];
 
-  Future<int> submitAppeal({
-    required String ciyuanxiId,
-    required String nickname,
-    required String content,
-  }) async {
-    final data = await _action('submit_appeal', {
-      'ciyuanxi_id': ciyuanxiId,
-      'nickname': nickname.trim(),
-      'content': content.trim(),
-      'device_id': await _auth.deviceId(),
-    });
-    return (data['id'] as num?)?.toInt() ?? 0;
-  }
+  /// 账号功能已移除：永远返回空列表。
+  Future<List<FeedbackNotification>> getMyFeedbackNotifications() async =>
+      const [];
 
-  Future<List<FeedbackNotification>> getMyFeedbackNotifications() async {
-    final user = _auth.currentState.user;
-    final ciyuanxiId = user?.ciyuanxiId?.trim();
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) return const [];
-    try {
-      final data = await _action('get_my_feedback_notifications', {
-        'ciyuanxi_id': ciyuanxiId,
-        'device_id': await _auth.deviceId(),
-      }, fetchTimeoutMs: 15000);
-      final list = (data['list'] as List?) ?? const [];
-      return list
-          .whereType<Map<String, dynamic>>()
-          .map(FeedbackNotification.fromJson)
-          .toList();
-    } catch (_) {
-      return const [];
-    }
-  }
+  /// 账号功能已移除：空实现。
+  Future<void> confirmFeedbackNotification(int id) async {}
 
-  Future<void> confirmFeedbackNotification(int id) async {
-    final user = _auth.currentState.user;
-    final ciyuanxiId = user?.ciyuanxiId?.trim() ?? '';
-    try {
-      await _action('confirm_feedback_notification', {
-        'id': id,
-        'ciyuanxi_id': ciyuanxiId,
-      }, fetchTimeoutMs: 15000);
-    } catch (e) {
-      AppLog.debug('auth', '上报反馈通知确认失败: $e');
-    }
-  }
+  /// 账号功能已移除：永远返回空列表。
+  Future<List<NicknameChangeNotice>> getNicknameChangeNotices() async =>
+      const [];
 
-  Future<List<NicknameChangeNotice>> getNicknameChangeNotices() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) return const [];
-    try {
-      final data = await _action('get_nickname_change_notices', {
-        'ciyuanxi_id': ciyuanxiId,
-      }, fetchTimeoutMs: 15000);
-      final list = (data['list'] as List?) ?? const [];
-      return list
-          .whereType<Map<String, dynamic>>()
-          .map(NicknameChangeNotice.fromJson)
-          .toList();
-    } catch (_) {
-      return const [];
-    }
-  }
-
-  Future<void> confirmNicknameChangeNotice(int id) async {
-    final ciyuanxiId = _ciyuanxiId ?? '';
-    if (id <= 0) return;
-    try {
-      await _action('confirm_nickname_change_notice', {
-        'id': id,
-        'ciyuanxi_id': ciyuanxiId,
-      }, fetchTimeoutMs: 15000);
-    } catch (e) {
-      AppLog.debug('auth', '上报昵称变更确认失败: $e');
-    }
-  }
-
-  Future<void> uploadSettings(AppSettings settings) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步设置'));
-    }
-    await _action('settings_sync_upload', {
-      'user_id': ciyuanxiId,
-      'platform': 'mobile',
-      'settings': settingsToSyncMap(settings),
-    }, fetchTimeoutMs: 20000);
-  }
-
-  Future<Map<String, dynamic>?> downloadSettings() async =>
-      (await downloadSettingsCrossPlatform()).settings;
-
-  Future<({Map<String, dynamic>? settings, DateTime? uploadedAt})>
-      downloadSettingsCrossPlatform() async {
-    final results = await Future.wait([
-      _downloadSettingsSnapshot('mobile'),
-      _downloadSettingsSnapshot('desktop'),
-    ]);
-    final own = results[0];
-    final desktop = results[1];
-    final ownOk = own.settings != null && own.settings!.isNotEmpty;
-    final deskOk = desktop.settings != null && desktop.settings!.isNotEmpty;
-    if (ownOk && deskOk) {
-      final epoch = DateTime.fromMillisecondsSinceEpoch(0);
-      final ownAt = own.uploadedAt ?? epoch;
-      final deskAt = desktop.uploadedAt ?? epoch;
-      return ownAt.isAfter(deskAt) ? own : desktop;
-    }
-    if (deskOk) return desktop;
-    return own;
-  }
-
-  Future<({Map<String, dynamic>? settings, DateTime? uploadedAt})>
-      _downloadSettingsSnapshot(String platform) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步设置'));
-    }
-    final data = await _action('settings_sync_download', {
-      'user_id': ciyuanxiId,
-      'platform': platform,
-    }, fetchTimeoutMs: 15000);
-    final settings = data['settings'];
-    DateTime? uploadedAt;
-    final ts = data['timestamp'];
-    if (ts is num && ts > 0) {
-      uploadedAt = DateTime.fromMillisecondsSinceEpoch((ts * 1000).round());
-    } else {
-      final uploadedAtStr = data['uploaded_at'];
-      if (uploadedAtStr is String && uploadedAtStr.isNotEmpty) {
-        uploadedAt = DateTime.tryParse(uploadedAtStr);
-      }
-    }
-    return (
-      settings: settings is Map<String, dynamic> ? settings : null,
-      uploadedAt: uploadedAt,
-    );
-  }
+  /// 账号功能已移除：空实现。
+  Future<void> confirmNicknameChangeNotice(int id) async {}
 
   Future<ServerLoadStatus?> getServerLoad() async {
     final ciyuanxiId = _ciyuanxiId;
@@ -413,247 +265,6 @@ class AccountApi {
     } catch (_) {
       return null;
     }
-  }
-
-  Future<int> uploadFavorites(
-    List<Map<String, dynamic>> favorites, {
-    List<String> deletePaths = const [],
-    // merge=false 为手动覆盖上传：服务端用本次上传全量替换（默认合并，自动同步不受影响）
-    bool merge = true,
-  }) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步收藏'));
-    }
-    final data = await _action('favorites_sync_upload', {
-      'user_id': ciyuanxiId,
-      'favorites': favorites,
-      if (deletePaths.isNotEmpty) 'delete_paths': deletePaths,
-      'merge': merge,
-    }, fetchTimeoutMs: 15000);
-    return (data['song_count'] as num?)?.toInt() ?? 0;
-  }
-
-  /// 下载云端收藏 + 删除广播账本：deletedPaths 为其他端「删除全部/删除云端」
-  /// 的 path 列表，拉取端据此裁剪本地副本（向后兼容：旧服务端缺省为空）。
-  Future<({List<Map<String, dynamic>> favorites, List<String> deletedPaths})>
-      downloadFavorites() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步收藏'));
-    }
-    final data = await _action('favorites_sync_download', {
-      'user_id': ciyuanxiId,
-    }, fetchTimeoutMs: 15000);
-    return (
-      favorites: ((data['favorites'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .toList(),
-      deletedPaths: ((data['deleted_paths'] as List?) ?? const [])
-          .whereType<String>()
-          .toList(),
-    );
-  }
-
-  /// 上传本地密封的网盘凭据串（`xy1:<iv>:<密文>`，服务端只见密文）。
-  Future<void> uploadCloudCreds(String sealed) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步网盘账号'));
-    }
-    await _action('cloud_creds_upload', {
-      'user_id': ciyuanxiId,
-      'sealed': sealed,
-    }, fetchTimeoutMs: 20000);
-  }
-
-  /// 拉取云端网盘凭据串；云端无数据返回 null。
-  Future<String?> downloadCloudCreds() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步网盘账号'));
-    }
-    final data = await _action('cloud_creds_download', {
-      'user_id': ciyuanxiId,
-    }, fetchTimeoutMs: 15000);
-    final sealed = data['sealed'];
-    if (sealed is String && sealed.isNotEmpty) return sealed;
-    return null;
-  }
-
-  Future<int> uploadHistory(List<Map<String, dynamic>> history) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步播放历史'));
-    }
-    final data = await _action('history_sync_upload', {
-      'user_id': ciyuanxiId,
-      'history': history,
-    }, fetchTimeoutMs: 30000);
-    return (data['history_count'] as num?)?.toInt() ?? 0;
-  }
-
-  Future<List<Map<String, dynamic>>> downloadHistory() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步播放历史'));
-    }
-    final data = await _action('history_sync_download', {
-      'user_id': ciyuanxiId,
-    }, fetchTimeoutMs: 15000);
-    return ((data['history'] as List?) ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .toList();
-  }
-
-  Future<void> deleteCloudPlaylist(String playlistId) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步歌单'));
-    }
-    await _action('file_sync_delete_playlist', {
-      'user_id': ciyuanxiId,
-      'cloud_ids': [playlistId],
-    }, fetchTimeoutMs: 15000);
-  }
-
-  Future<({int playlistCount, int songTotal, List<Map<String, dynamic>> idMap})>
-      fileSyncUpload(List<Map<String, dynamic>> playlists,
-          {/* merge=false 为手动覆盖上传：服务端用本次上传全量替换快照 */ bool merge = true}) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步歌单'));
-    }
-    await _action('file_sync_upload_start', {'user_id': ciyuanxiId},
-        fetchTimeoutMs: 50000);
-    const maxSongsPerChunk = 1500;
-    final chunks = <List<Map<String, dynamic>>>[];
-    var current = <Map<String, dynamic>>[];
-    var currentSongs = 0;
-    for (final p in playlists) {
-      final songs = (p['songs'] as List?) ?? const [];
-      if (current.isNotEmpty && currentSongs + songs.length > maxSongsPerChunk) {
-        chunks.add(current);
-        current = [];
-        currentSongs = 0;
-      }
-      current.add(p);
-      currentSongs += songs.length;
-    }
-    if (current.isNotEmpty) chunks.add(current);
-    for (var i = 0; i < chunks.length; i++) {
-      await _action('file_sync_upload_chunk', {
-        'user_id': ciyuanxiId,
-        'chunk_index': i,
-        'total_chunks': chunks.length,
-        'chunk_data': chunks[i],
-      }, fetchTimeoutMs: 65000);
-    }
-    final finish = await _action('file_sync_upload_finish', {
-      'user_id': ciyuanxiId,
-      'merge': merge,
-    }, fetchTimeoutMs: 50000);
-    final idMap = (finish['id_map'] as List? ?? const [])
-        .whereType<Map>()
-        .map((e) => e.cast<String, dynamic>())
-        .toList();
-    return (
-      playlistCount: (finish['playlist_count'] as num?)?.toInt() ?? 0,
-      songTotal: (finish['song_total'] as num?)?.toInt() ?? 0,
-      idMap: idMap,
-    );
-  }
-
-  Future<Map<String, dynamic>?> fileSyncDownload() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步歌单'));
-    }
-    final data = await _action('file_sync_download', {'user_id': ciyuanxiId},
-        fetchTimeoutMs: 30000);
-    return data.isEmpty ? null : data;
-  }
-
-  /// v2 下载协议：上报本地歌单概要（song_hashes），服务端算 diff 返回最小 ops。
-  Future<Map<String, dynamic>> fileSyncV2DownloadOps(
-      List<Map<String, dynamic>> localPlaylists) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步歌单'));
-    }
-    return _action('file_sync_v2_download_ops', {
-      'user_id': ciyuanxiId,
-      'local_playlists': localPlaylists,
-    }, fetchTimeoutMs: 30000);
-  }
-
-  Future<void> uploadPlugin(
-    Map<String, dynamic> plugin, {
-    bool isFirst = false,
-    List<Map<String, dynamic>>? subscriptions,
-  }) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步插件'));
-    }
-    await _action('plugin_sync_upload_one', {
-      'user_id': ciyuanxiId,
-      'plugin': plugin,
-      'is_first': isFirst,
-      'subscriptions': ?subscriptions,
-    }, fetchTimeoutMs: 60000);
-  }
-
-  /// 批量覆盖上传：一次请求把云端插件/订阅替换为所传全集
-  ///（手动「同步至服务器」专用，替代「批量清理 + N 次 upload_one」）
-  Future<void> uploadPluginsBatch(
-    List<Map<String, dynamic>> plugins, {
-    required List<Map<String, dynamic>> subscriptions,
-  }) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步插件'));
-    }
-    await _action('plugin_sync_upload_batch', {
-      'user_id': ciyuanxiId,
-      'plugins': plugins,
-      'subscriptions': subscriptions,
-    }, fetchTimeoutMs: 115000);
-  }
-
-  Future<Map<String, dynamic>> downloadPluginSnapshot() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步插件'));
-    }
-    return _action('plugin_sync_download', {'user_id': ciyuanxiId},
-        fetchTimeoutMs: 15000);
-  }
-
-  Future<void> deleteCloudPlugins(List<String> pluginIds) async {
-    if (pluginIds.isEmpty) return;
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步插件'));
-    }
-    await _action('plugin_sync_delete', {
-      'user_id': ciyuanxiId,
-      'plugin_ids': pluginIds,
-    }, fetchTimeoutMs: 15000);
-  }
-
-  /// 云端订阅链接显式删除（url 维度）。云端订阅为各端并集，
-  /// 本地移除时须调用否则会被其他端重新合并回来。
-  Future<void> deleteCloudSubscriptions(List<String> urls) async {
-    if (urls.isEmpty) return;
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录后再同步插件'));
-    }
-    await _action('plugin_sync_delete', {
-      'user_id': ciyuanxiId,
-      'subscription_urls': urls,
-    }, fetchTimeoutMs: 15000);
   }
 
   static Map<String, dynamic> normalizeWallpaper(Map<dynamic, dynamic> w) => {
@@ -703,50 +314,6 @@ class AccountApi {
         .toList();
   }
 
-  Future<List<Map<String, dynamic>>> fetchMyWallpapers() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录账号后再查看我的上传'));
-    }
-    final data = await _auth.requestActionList('my_wallpapers', {
-      'ciyuanxi_id': ciyuanxiId,
-      'platform': 'mobile',
-    }, fetchTimeoutMs: 15000);
-    final list = data is List ? data : const [];
-    return list
-        .whereType<Map>()
-        .map((m) => normalizeWallpaper(m.cast<String, dynamic>()))
-        .toList();
-  }
-
-  Future<void> uploadWallpaper({
-    required String title,
-    required String description,
-    required String category,
-    required String imageData,
-    String? videoData,
-    int videoDuration = 0,
-    String mediaType = 'video',
-  }) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录账号后再上传壁纸'));
-    }
-    final isVideo = videoData != null && videoData.isNotEmpty;
-    await _action('upload_wallpaper', {
-      'ciyuanxi_id': ciyuanxiId,
-      'nickname': _auth.currentState.user?.nickname ?? '',
-      'title': title,
-      'description': description,
-      'category': category.trim().isEmpty ? tr('用户上传') : category.trim(),
-      'platform': 'mobile',
-      'image_data': imageData,
-      if (isVideo) 'video_data': videoData,
-      if (isVideo) 'video_duration': videoDuration,
-      if (isVideo) 'media_type': mediaType,
-    }, fetchTimeoutMs: isVideo ? 600000 : 90000);
-  }
-
   Future<LeaderboardData> fetchLeaderboard({
     int limit = 50,
     String period = 'total',
@@ -760,135 +327,38 @@ class AccountApi {
     return LeaderboardData.fromJson(data);
   }
 
+  // ==================== 行为/听歌上报（已移除，空实现占位） ====================
+  // 账号功能移除后不再向服务端上报任何个人行为数据；保留签名以免牵动调用方。
+
   Future<Map<String, dynamic>> reportListenStatsDelta({
     required int deltaTotal,
     required int deltaDaily,
     int elapsedSecs = -1,
-  }) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      return const {};
-    }
-    try {
-      final data = await _action('report_listen_stats', {
-        'ciyuanxi_id': ciyuanxiId,
-        'stats_mode': 'delta',
-        'delta_duration': deltaTotal.clamp(0, 1 << 31),
-        'delta_daily_duration': deltaDaily.clamp(0, 1 << 31),
-        'elapsed_secs': elapsedSecs,
-        // 弱网（蜂窝信号差）下 8s 频繁超时导致回执拿不到、快照进不来，
-        // 个人中心会退化为纯本地口径与排行榜脱节；放宽到与排行榜同级
-      }, fetchTimeoutMs: 15000);
-      final resetAt = data['reset_at'];
-      if (resetAt is String && resetAt.isNotEmpty) {
-        return {'resetAt': resetAt};
-      }
-      return {
-        'total': (data['server_total_duration'] as num?)?.toInt() ?? 0,
-        'daily': (data['server_daily_duration'] as num?)?.toInt() ?? 0,
-        'weekly': (data['server_weekly_duration'] as num?)?.toInt() ?? 0,
-        'acceptedTotal': (data['accepted_total'] as num?)?.toInt() ?? 0,
-        'acceptedDaily': (data['accepted_daily'] as num?)?.toInt() ?? 0,
-        'serverElapsedSecs': (data['server_elapsed_secs'] as num?)?.toInt() ?? -1,
-      };
-    } catch (_) {
-      return const {};
-    }
-  }
+  }) async =>
+      const {};
 
-  /// 听歌事件流水上报（v2：幂等事件，服务端唯一账本）。
-  /// 与 reportListenStatsDelta 不同：失败直接抛异常——调用方必须区分
-  /// 成功/失败来决定删不删事件队列（失败保留队列重试，幂等键保证不重报）。
+  /// 听歌事件流水上报（已移除）：直接回执成功并丢弃，调用方清空队列。
   Future<Map<String, dynamic>> reportListenEvents({
     required String batchId,
     required List<Map<String, dynamic>> events,
-  }) async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw StateError('未登录，听歌事件暂缓上报');
-    }
-    final data = await _action('report_listen_events', {
-      'ciyuanxi_id': ciyuanxiId,
-      'batch_id': batchId,
-      'events': events,
-      // 弱网（蜂窝信号差）下 8s 频繁超时导致回执拿不到、快照进不来，
-      // 个人中心会退化为纯本地口径与排行榜脱节；放宽到与排行榜同级
-    }, fetchTimeoutMs: 15000);
-    return {
-      'resetAt': (data['reset_at'] ?? '').toString(),
-      'reason': (data['reason'] ?? '').toString(),
-      'total': (data['server_total_duration'] as num?)?.toInt() ?? 0,
-      'daily': (data['server_daily_duration'] as num?)?.toInt() ?? 0,
-      'weekly': (data['server_weekly_duration'] as num?)?.toInt() ?? 0,
-      'accepted': (data['accepted'] as num?)?.toInt() ?? 0,
-    };
-  }
+  }) async =>
+      {'resetAt': '', 'reason': '', 'total': 0, 'daily': 0, 'weekly': 0, 'accepted': events.length};
 
-  /// 纯快照拉取：零上报，云端现算值（总/今日/近七日）。失败返回空表。
-  Future<Map<String, dynamic>> fetchListenStatsSummary() async {
-    final ciyuanxiId = _ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      return const {};
-    }
-    try {
-      final data = await _action('get_listen_stats_summary', {
-        'ciyuanxi_id': ciyuanxiId,
-      }, fetchTimeoutMs: 15000);
-      return {
-        'resetAt': (data['reset_at'] ?? '').toString(),
-        'total': (data['server_total_duration'] as num?)?.toInt() ?? 0,
-        'daily': (data['server_daily_duration'] as num?)?.toInt() ?? 0,
-        'weekly': (data['server_weekly_duration'] as num?)?.toInt() ?? 0,
-      };
-    } catch (_) {
-      return const {};
-    }
-  }
+  Future<Map<String, dynamic>> fetchListenStatsSummary() async => const {};
 
-  Future<void> reportAppOpen() async {
-    final info = await _deviceInfo();
-    await _fireAndForget(
-        'open', {...info, 'platform': 'mobile', 'ciyuanxi_id': _ciyuanxiId ?? ''});
-  }
+  Future<void> reportAppOpen() async {}
 
   Future<void> reportSearch(
-      String keyword, String source, int resultCount) async {
-    final trimmed = keyword.trim();
-    if (trimmed.isEmpty) return;
-    final info = await _deviceInfo();
-    await _fireAndForget('search', {
-      'device_id': info['device_id'],
-      'keyword': trimmed,
-      'source': source,
-      'result_count': resultCount,
-    });
-  }
+      String keyword, String source, int resultCount) async {}
 
-  Future<void> reportInputStats(int charCount) async {
-    if (charCount <= 0) return;
-    final info = await _deviceInfo();
-    await _fireAndForget('input_stats', {
-      'device_id': info['device_id'],
-      'char_count': charCount,
-    });
-  }
+  Future<void> reportInputStats(int charCount) async {}
 
   Future<void> reportError({
     required String errorType,
     required String errorMessage,
     String errorStack = '',
     String page = '',
-  }) async {
-    final info = await _deviceInfo();
-    await _fireAndForget('error', {
-      ...info,
-      'platform': 'android',
-      'error_type': errorType,
-      'error_message': errorMessage,
-      'error_stack': errorStack,
-      'page': page,
-    });
-  }
+  }) async {}
 
   Future<void> reportUserBehavior({
     required String songId,
@@ -899,40 +369,11 @@ class AccountApi {
     required String action,
     required int listenDuration,
     required int playCount,
-  }) async {
-    final info = await _deviceInfo();
-    await _fireAndForget('report_user_behavior', {
-      ...info,
-      'song_id': songId,
-      'song_name': songName,
-      'singer': singer,
-      'song_hash': songHash,
-      'source': source,
-      'action': action,
-      'listen_duration': listenDuration,
-      'play_count': playCount,
-    });
-  }
+  }) async {}
 
   /// 主题广场：服务端只返回已过审（status=normal）的 mobile 主题。
-  ///
-  /// 必须走 [AuthNotifier.requestActionList]：该 action 的 `data` 是**数组**，
-  /// 走 `requestAction` 会在把 `data` 转 `Map` 时抛类型错。
   Future<dynamic> listThemes({String platform = 'mobile'}) {
     return _auth.requestActionList('list_themes', {'platform': platform});
-  }
-
-  /// 我的上传：返回该弦予号上传的全部主题（服务端不过滤 status，含待审）。
-  ///
-  /// 同上，`data` 为数组，用 [AuthNotifier.requestActionList]。
-  Future<dynamic> myThemes({
-    required String ciyuanxiId,
-    String platform = 'mobile',
-  }) {
-    return _auth.requestActionList('my_themes', {
-      'ciyuanxi_id': ciyuanxiId,
-      'platform': platform,
-    });
   }
 
   Future<Map<String, dynamic>> _deviceInfo() async {
@@ -947,128 +388,6 @@ class AccountApi {
       'device_manufacturer': dev.manufacturer,
     };
   }
-
-  Future<void> _fireAndForget(String action, Map<String, dynamic> body) async {
-    try {
-      await _action(action, body);
-    } catch (e) {
-      AppLog.debug('auth', '后台请求 $action 失败: $e');
-    }
-  }
 }
 
 final accountApiProvider = Provider<AccountApi>((ref) => AccountApi(ref));
-
-Map<String, dynamic> settingsToSyncMap(AppSettings s) => {
-      'volume': s.volume,
-      'playMode': s.playMode,
-      'keepScreenOn': s.keepScreenOn,
-      'themeMode': s.themeMode.index,
-      'accentColor': s.accentColor,
-      'showQualityBadges': s.showQualityBadges,
-      'onlineDefaultQuality': s.onlineDefaultQuality,
-      'libraryMinDurationSeconds': s.libraryMinDurationSeconds,
-      'showLyricsTranslation': s.showLyricsTranslation,
-      'enableWordEffect': s.enableWordEffect,
-      'downloadQuality': s.downloadQuality,
-      'downloadLyrics': s.downloadLyrics,
-      'organizeRule': s.organizeRule,
-    };
-
-Map<String, Object?> normalizeCloudSettingsMap(Map<String, dynamic> cloud) {
-  Object? pick(String flatKey, [String? nestedPath]) {
-    final flat = cloud[flatKey];
-    if (flat != null) return flat;
-    if (nestedPath == null) return null;
-    Object? cur = cloud;
-    for (final p in nestedPath.split('.')) {
-      if (cur is Map) {
-        cur = cur[p];
-      } else {
-        return null;
-      }
-    }
-    return cur;
-  }
-
-  int? accentColorOf(Object? v) {
-    if (v is num) return v.toInt();
-    if (v is String) {
-      var hex = v.trim().replaceFirst('#', '').replaceFirst('0x', '');
-      if (hex.length == 6) hex = 'FF$hex';
-      return int.tryParse(hex, radix: 16);
-    }
-    return null;
-  }
-
-  int? themeModeOf(Object? v) {
-    if (v is int) return v;
-    if (v is String) {
-      return switch (v) {
-        'light' => 1,
-        'dark' => 2,
-        'system' => 0,
-        _ => null,
-      };
-    }
-    return null;
-  }
-
-  bool? boolOf(Object? v) => v is bool ? v : null;
-  String? strOf(Object? v) => v is String ? v : null;
-
-  return {
-    'volume': (pick('volume') as num?)?.toDouble(),
-    'playMode': (pick('playMode') as num?)?.toInt(),
-    'keepScreenOn': boolOf(pick('keepScreenOn')),
-    'themeMode': themeModeOf(pick('themeMode', 'theme.mode')),
-    'accentColor': accentColorOf(pick('accentColor', 'theme.accentColor')),
-    'showQualityBadges': boolOf(pick('showQualityBadges')),
-    'onlineDefaultQuality':
-        strOf(pick('onlineDefaultQuality', 'audio.onlineDefaultQuality')),
-    'libraryMinDurationSeconds':
-        (pick('libraryMinDurationSeconds') as num?)?.toInt(),
-    'showLyricsTranslation': boolOf(pick('showLyricsTranslation')),
-    'enableWordEffect': boolOf(pick('enableWordEffect', 'lyrics.enableWordEffect')),
-    'downloadQuality': strOf(pick('downloadQuality', 'download.quality')),
-    'downloadLyrics': boolOf(pick('downloadLyrics')),
-    'organizeRule': strOf(pick('organizeRule')),
-  };
-}
-
-AppSettings applySyncedSettings(AppSettings local, Map<String, dynamic> cloud) {
-  final m = normalizeCloudSettingsMap(cloud);
-  final themeIdx = m['themeMode'] as int?;
-  final maxIdx = ThemeModePreference.values.length - 1;
-  return local.copyWith(
-    volume: (m['volume'] as double?) ?? local.volume,
-    playMode: (m['playMode'] as int?) ?? local.playMode,
-    keepScreenOn: (m['keepScreenOn'] as bool?) ?? local.keepScreenOn,
-    themeMode: themeIdx == null
-        ? local.themeMode
-        : ThemeModePreference.values[themeIdx.clamp(0, maxIdx)],
-    accentColor: (m['accentColor'] as int?) ?? local.accentColor,
-    showQualityBadges: (m['showQualityBadges'] as bool?) ?? local.showQualityBadges,
-    onlineDefaultQuality:
-        (m['onlineDefaultQuality'] as String?) ?? local.onlineDefaultQuality,
-    libraryMinDurationSeconds:
-        (m['libraryMinDurationSeconds'] as int?) ?? local.libraryMinDurationSeconds,
-    showLyricsTranslation:
-        (m['showLyricsTranslation'] as bool?) ?? local.showLyricsTranslation,
-    enableWordEffect: (m['enableWordEffect'] as bool?) ?? local.enableWordEffect,
-    downloadQuality: (m['downloadQuality'] as String?) ?? local.downloadQuality,
-    downloadLyrics: (m['downloadLyrics'] as bool?) ?? local.downloadLyrics,
-    organizeRule: (m['organizeRule'] as String?) ?? local.organizeRule,
-  );
-}
-
-bool areSettingsEqual(AppSettings local, Map<String, dynamic> cloud) {
-  final localMap = settingsToSyncMap(local);
-  final m = normalizeCloudSettingsMap(cloud);
-  for (final entry in localMap.entries) {
-    final cloudVal = m[entry.key];
-    if (cloudVal == null) continue;
-    if (cloudVal != entry.value) return false;
-  }
-  return true;
-}

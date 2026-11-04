@@ -111,12 +111,6 @@ class _LandscapeRail extends ConsumerWidget {
         (s) => s.valueOrNull?.navOrderLandscape ?? kDefaultNavOrderLandscape,
       ),
     );
-    // 已绑定网盘才显示「网盘音乐」
-    final hasCloud = ref.watch(
-      boundCloudProvidersProvider.select(
-        (a) => a.valueOrNull?.isNotEmpty ?? false,
-      ),
-    );
     final libSel = ref.watch(landscapeLibraryProvider);
 
     // 导航页签与音乐库项合并为一组（参考桌面端侧栏：一条连续列表，
@@ -138,9 +132,8 @@ class _LandscapeRail extends ConsumerWidget {
             onTap: () {
               ref.read(landscapeDetailProvider.notifier).state = null;
               ref.read(landscapeLibraryProvider.notifier).state = null;
-              // 账号/下载是盖在页签内容上的浮层面板，切页签时一并收起，
+              // 下载是盖在页签内容上的浮层面板，切页签时一并收起，
               // 否则底层页签已切换却被面板挡住（需手动关闭才能看到）
-              ref.read(landscapeAccountOpenProvider.notifier).state = false;
               ref.read(landscapeDownloadOpenProvider.notifier).state = false;
               onSelect(nav.branchIndex);
             },
@@ -150,7 +143,6 @@ class _LandscapeRail extends ConsumerWidget {
       }
       final lib = landscapeLibraryNavById[id];
       if (lib == null) continue;
-      if (lib.requiresCloud && !hasCloud) continue;
       rows.add(
         _railItem(
           context,
@@ -165,7 +157,6 @@ class _LandscapeRail extends ConsumerWidget {
           onTap: () {
             closeLandscapeSearch(ref);
             ref.read(landscapeDetailProvider.notifier).state = null;
-            ref.read(landscapeAccountOpenProvider.notifier).state = false;
             ref.read(landscapeDownloadOpenProvider.notifier).state = false;
             ref.read(landscapeLibraryProvider.notifier).state = lib.paneIndex;
           },
@@ -422,7 +413,8 @@ class _MusicLibraryPane extends ConsumerWidget {
             // 切导航分支时该状态先于退场动画清空，watch 它会让淡出中的
             // 面板当场重建成路由态头部（全宽 tab pill + 排序行）闪烁
             0 => const LibraryPage(paneEmbedded: true),
-            1 => const CloudDiskPage(paneEmbedded: true),
+            // 网盘音乐已随账号功能移除，paneIndex 1 保留占位
+            1 => const SizedBox.shrink(),
             2 => const FavoritesPage(paneEmbedded: true),
             3 => const RecentPage(paneEmbedded: true),
             4 => const PlaylistsPage(paneEmbedded: true),
@@ -432,17 +424,6 @@ class _MusicLibraryPane extends ConsumerWidget {
         ),
       ),
     );
-  }
-}
-
-class _AccountPane extends StatelessWidget {
-  const _AccountPane({required this.onBack});
-
-  final VoidCallback onBack;
-
-  @override
-  Widget build(BuildContext context) {
-    return AccountPage(embedded: true, onBack: onBack);
   }
 }
 
@@ -518,22 +499,11 @@ class _LandscapeDetailPane extends ConsumerWidget {
         args: d.args,
         paneEmbedded: true,
       ),
-      LandscapeCloudGroupDetail d => CloudGroupSongsPage(
-        title: d.title,
-        items: d.items,
-        paneEmbedded: true,
-      ),
       LandscapeFolderPickerDetail _ => const FolderPickerPage(
         paneEmbedded: true,
       ),
       LandscapeRemoteLibraryDetail _ => const RemoteLibraryPage(
         paneEmbedded: true,
-      ),
-      LandscapeCloudManageDetail _ => const CloudBindPage(embedded: true),
-      LandscapeCloudPickerDetail d => CloudFolderPickerPage(
-        providerId: d.providerId,
-        accountId: d.accountId,
-        embedded: true,
       ),
     };
     // 与 _MusicLibraryPane 一级面板同口径：固定态 shell 固定带盖住顶部，

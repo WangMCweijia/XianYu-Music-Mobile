@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../plugin/plugin_backup_import.dart';
 import '../player/player_provider.dart';
-import '../sync/sync_trigger.dart';
 import 'playlist_store.dart';
 
 class ImportedPlaylistState {
@@ -42,14 +41,12 @@ class PlaylistManager extends StateNotifier<ImportedPlaylistState> {
   ) async {
     final playlists = await _store.addPlaylists(prepared.playlists);
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
     return playlists;
   }
 
   Future<void> remove(String id) async {
     final playlists = await _store.removePlaylist(id);
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> detachCloud(String id) async {
@@ -69,25 +66,21 @@ class PlaylistManager extends StateNotifier<ImportedPlaylistState> {
     ];
     await _store.saveAll(result);
     state = ImportedPlaylistState(playlists: result, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> create(String name) async {
     final playlists = await _store.createPlaylist(name);
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> rename(String id, String name) async {
     final playlists = await _store.renamePlaylist(id, name);
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> addSongs(String id, List<ImportedSong> songs) async {
     final playlists = await _store.addSongsTo(id, songs);
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> setSource(
@@ -103,7 +96,6 @@ class PlaylistManager extends StateNotifier<ImportedPlaylistState> {
       sourceRaw: sourceRaw,
     );
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> applySourceSync(
@@ -117,19 +109,16 @@ class PlaylistManager extends StateNotifier<ImportedPlaylistState> {
       fullSync: fullSync,
     );
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> removeSong(String id, String path) async {
     final playlists = await _store.removeSong(id, path);
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> reorderSongs(String id, List<String> orderedPaths) async {
     final playlists = await _store.reorderSongs(id, orderedPaths);
     state = ImportedPlaylistState(playlists: playlists, loading: false);
-    SyncTrigger.markDirty(const {SyncTrigger.playlists});
   }
 
   Future<void> play(ImportedPlaylist playlist, int index) async {
@@ -143,20 +132,6 @@ class PlaylistManager extends StateNotifier<ImportedPlaylistState> {
 /// ImportedSong → QueueItem 公开转换：播放器媒体会话（Android Auto 浏览树）
 /// 与歌单 UI 共用，保证线上歌渲染元数据口径一致。
 QueueItem importedSongToQueueItem(ImportedSong song) {
-  // 网盘条目：path 自描述（cloud://盘/账号/文件），反解出播放上下文即可
-  // 复用网盘播放管线；封面沿用入库时的远端地址
-  if (song.path.startsWith('cloud://')) {
-    final ctx = CloudPlayContext.fromPath(song.path);
-    return QueueItem(
-      path: song.path,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      durationMs: song.duration * 1000,
-      coverUrl: song.coverUrl,
-      cloudInfoJson: ctx == null ? null : jsonEncodeSafe(ctx.toJson()),
-    );
-  }
   if (song.isLocal) {
     return QueueItem(
       path: song.path,

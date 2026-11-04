@@ -104,7 +104,6 @@ const kDefaultNavOrderLandscape = [
   'mine',
   'plugin',
   'lib-local',
-  'lib-cloud',
   'lib-favorites',
   'lib-recent',
   'lib-playlists',

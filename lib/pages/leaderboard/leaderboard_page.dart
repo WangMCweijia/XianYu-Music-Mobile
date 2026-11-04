@@ -1,16 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../src/auth/account_api.dart';
 import '../../src/core/app_colors.dart';
 import '../../src/core/application_logger.dart';
-import '../../src/auth/auth_provider.dart';
 import '../../src/auth/server_models.dart';
 import 'leaderboard_prefetch.dart';
 import '../../src/core/settings.dart';
 import '../../src/navigation/shell.dart';
-import '../../src/responsive/landscape.dart';
 import '../../src/widgets/stagger_in.dart';
 import '../../src/widgets/user_avatar.dart';
 import '../../src/widgets/glass_appbar.dart';
@@ -295,7 +292,6 @@ class _PeriodBoardState extends ConsumerState<_PeriodBoard> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final loggedIn = ref.watch(authProvider).isLoggedIn;
 
     if (!_tabReady || (_loading && _entries.isEmpty)) {
       final skeleton = Container(
@@ -385,42 +381,6 @@ class _PeriodBoardState extends ConsumerState<_PeriodBoard> {
             child: _stagger.wrap(
               top.length,
               _LeaderboardRow(entry: me, isMe: true, highlight: me.rank <= 3),
-            ),
-          ),
-        ] else if (!loggedIn) ...[
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 6),
-            child: Center(
-              child: Text(
-                '···',
-                style: TextStyle(
-                  fontSize: 12,
-                  letterSpacing: 2,
-                  color: Colors.grey,
-                ),
-              ),
-            ),
-          ),
-          Padding(
-            padding: EdgeInsets.fromLTRB(
-              16,
-              0,
-              16,
-              24 + MediaQuery.paddingOf(context).bottom,
-            ),
-            child: _stagger.wrap(
-              top.length,
-              // 横屏：开右侧账号面板；竖屏走路由
-              _LoginRow(
-                onTap: () {
-                  if (useLandscape(ref)) {
-                    ref.read(landscapeAccountOpenProvider.notifier).state =
-                        true;
-                  } else {
-                    context.push('/account');
-                  }
-                },
-              ),
             ),
           ),
         ],
@@ -718,101 +678,5 @@ class _Avatar extends ConsumerWidget {
         ),
       ),
     );
-  }
-}
-
-class _LoginRow extends ConsumerWidget {
-  const _LoginRow({required this.onTap});
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final scheme = Theme.of(context).colorScheme;
-
-    final card = Material(
-      color: scheme.primary.withValues(alpha: 0.08),
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: scheme.primary.withValues(alpha: 0.3)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 28,
-                height: 28,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: appCardFill(context, ref),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '—',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              ClipOval(
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  color: appCardFill(context, ref),
-                  alignment: Alignment.center,
-                  child: Text(
-                    tr('未'),
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: scheme.primary,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      tr('未登录'),
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      tr('登录后查看个人排名'),
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Text(
-                tr('去登录'),
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: scheme.primary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    return PressableScale(child: card);
   }
 }

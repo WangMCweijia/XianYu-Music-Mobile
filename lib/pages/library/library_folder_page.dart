@@ -9,11 +9,6 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../../src/cloud/cloud_credentials_store.dart';
-import '../../src/cloud/cloud_folder_selection_store.dart';
-import '../../src/cloud/cloud_provider.dart';
-import '../../src/cloud/cloud_registry.dart';
-import '../../src/cloud/cloud_types.dart';
 import '../../src/core/app_colors.dart';
 import '../../src/core/application_logger.dart';
 import '../../src/core/platform_caps.dart';
@@ -59,23 +54,6 @@ class _LibraryFolderPageState extends ConsumerState<LibraryFolderPage>
   bool _adding = false;
 
   int _lastDuration = 60;
-
-  /// 横屏右列当前展示的网盘（null = 本地已扫描目录树）：
-  /// 点左列网盘项内嵌展示已选文件夹，对齐桌面端树形态，不跳全屏浏览器
-  MapEntry<CloudProvider, CloudAccount>? _cloudDrive;
-
-  /// 已选文件夹版本号：选择器保存/移除后 +1，左列计数与右列列表据此刷新
-  int _cloudRev = 0;
-
-  String? get _cloudDriveKey {
-    final d = _cloudDrive;
-    return d == null ? null : '${d.key.id}|${d.value.accountId}';
-  }
-
-  void _toggleCloudDrive(MapEntry<CloudProvider, CloudAccount>? e) =>
-      setState(() => _cloudDrive = e);
-
-  void _onCloudFoldersChanged() => setState(() => _cloudRev++);
 
   @override
   void initState() {

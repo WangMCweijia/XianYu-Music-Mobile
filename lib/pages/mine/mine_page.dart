@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../src/auth/auth_provider.dart';
-import '../../src/cloud/cloud_registry.dart';
 import '../../src/core/settings.dart';
 import '../../src/theme/theme_icon.dart';
 import '../../src/favorites/favorites_provider.dart';
@@ -27,7 +26,6 @@ import '../../src/widgets/online_cover.dart';
 import '../../src/widgets/page_search_bar.dart';
 import '../../src/widgets/press_scale.dart';
 import '../../src/widgets/sheet_dialog.dart';
-import '../../src/widgets/user_avatar.dart';
 import '../home/discover_section.dart' show StatsSummaryCard;
 import '../home/online_detail_page.dart';
 import '../search/search_page.dart' show searchSessionProvider;
@@ -67,8 +65,6 @@ class MinePage extends ConsumerWidget {
               ),
               children: [
                 SizedBox(height: 18),
-                _AccountArea(),
-                SizedBox(height: 22),
                 if (ref.watch(authProvider.select((a) => a.isLoggedIn))) ...[
                   StatsSummaryCard(),
                   SizedBox(height: 22),
@@ -110,9 +106,10 @@ class MinePage extends ConsumerWidget {
             padding: EdgeInsets.fromLTRB(24, topInset, 24, 24),
             children: [
               const SizedBox(height: 18),
-              const _AccountArea(),
-              if (loggedIn) ...[const SizedBox(height: 16), StatsSummaryCard()],
-              const SizedBox(height: 16),
+              if (loggedIn) ...[
+                StatsSummaryCard(),
+                const SizedBox(height: 16),
+              ],
               const _StatsRow(),
               const SizedBox(height: 24),
               const _QuickCards(),
@@ -198,19 +195,12 @@ class _QuickCards extends ConsumerWidget {
     final hasPlugin = ref.watch(
       pluginManagerProvider.select((s) => s.sources.any((p) => p.enabled)),
     );
-    final hasCloud = ref.watch(
-      boundCloudProvidersProvider.select(
-        (a) => a.valueOrNull?.isNotEmpty ?? false,
-      ),
-    );
     final cards = [
       (tr('我的收藏'), tr('喜欢的音乐、歌单与专辑'), Icons.favorite_outline, 'lib-fav'),
       (tr('最近播放'), tr('最近听过的歌曲'), Icons.history_outlined, 'lib-recent'),
       (tr('本地音乐'), tr('管理本地曲库'), Icons.library_music_outlined, '/library'),
       if (hasPlugin)
         (tr('歌曲下载'), tr('管理下载任务'), Icons.download_outlined, '/download'),
-      if (hasCloud)
-        (tr('网盘'), tr('浏览网盘音频'), Icons.cloud_outlined, '/cloud-disk'),
     ];
 
     void open((String, String, IconData, String) c) {
@@ -221,13 +211,6 @@ class _QuickCards extends ConsumerWidget {
           ref.read(landscapeLibraryProvider.notifier).state = 3;
         case '/library':
           ref.read(landscapeLibraryProvider.notifier).state = 0;
-        case '/cloud-disk':
-          // 横屏切到侧边栏音乐库的网盘入口（1=网盘音乐）；竖屏走路由
-          if (useLandscape(ref)) {
-            ref.read(landscapeLibraryProvider.notifier).state = 1;
-          } else {
-            context.push(c.$4);
-          }
         case '/download':
           ref.read(landscapeDownloadOpenProvider.notifier).state = true;
         default:
@@ -309,174 +292,6 @@ class _QuickCards extends ConsumerWidget {
   }
 }
 
-class _AccountArea extends ConsumerWidget {
-  const _AccountArea();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final scheme = Theme.of(context).colorScheme;
-    final isLandscape = useLandscape(ref);
-    final auth = ref.watch(authProvider);
-    final user = auth.user;
-    final loggedIn = auth.isLoggedIn && user != null;
-
-    if (!loggedIn) {
-      return Column(
-        children: [
-          const SizedBox(height: 6),
-          PressableScale(
-            child: Material(
-              borderRadius: BorderRadius.circular(999),
-              child: InkWell(
-                onTap: () {
-                  // 横屏：开右侧账号面板；竖屏走路由
-                  if (isLandscape) {
-                    ref.read(landscapeAccountOpenProvider.notifier).state =
-                        true;
-                  } else {
-                    context.push('/account');
-                  }
-                },
-                borderRadius: BorderRadius.circular(999),
-                child: Container(
-                  height: 52,
-                  padding: const EdgeInsets.symmetric(horizontal: 28),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFEC4141), Color(0xFFFF6B6B)],
-                    ),
-                    borderRadius: BorderRadius.circular(999),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFEC4141).withValues(alpha: 0.35),
-                        blurRadius: 18,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        tr('登录弦予音乐账号'),
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: scheme.onPrimary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            tr('登录后同步你的歌单与设置'),
-            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-          ),
-        ],
-      );
-    }
-
-    final accountCard = Material(
-      color: Colors.transparent,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide.none,
-      ),
-      child: InkWell(
-        onTap: () {
-          if (isLandscape) {
-            ref.read(landscapeAccountOpenProvider.notifier).state = true;
-          } else {
-            context.push('/account');
-          }
-        },
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: scheme.primary,
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: user.avatar != null && user.avatar!.isNotEmpty
-                    ? UserAvatarImage(
-                        avatar: user.avatar,
-                        fallback: _fallback(scheme, user.nickname),
-                        size: 56,
-                      )
-                    : _fallback(scheme, user.nickname),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      user.nickname.isEmpty ? tr('未命名用户') : user.nickname,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      tr('管理账号与安全'),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                onPressed: () => context.push('/scan'),
-                icon: Icon(Icons.qr_code_scanner, color: scheme.outline),
-                tooltip: tr('扫码'),
-                splashRadius: 20,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    return frostedCardSurface(
-      context: context,
-      ref: ref,
-      radius: 16,
-      child: PressableScale(child: accountCard),
-      themeSlot: 'mine.user',
-    );
-  }
-
-  Widget _fallback(ColorScheme scheme, String nickname) {
-    final char = nickname.isEmpty
-        ? '?'
-        : String.fromCharCode(nickname.runes.first);
-    return Center(
-      child: Text(
-        char,
-        style: TextStyle(
-          fontSize: 22,
-          fontWeight: FontWeight.bold,
-          color: scheme.onPrimary,
-        ),
-      ),
-    );
-  }
-}
-
 class _QuickEntries extends ConsumerWidget {
   const _QuickEntries();
 
@@ -490,11 +305,6 @@ class _QuickEntries extends ConsumerWidget {
       recentProvider.select((s) => s.entries.length),
     );
     final localCount = ref.watch(libraryProvider.select((s) => s.songs.length));
-    // 「我的」四宫格末位：原下载入口改为网盘入口（下载管理收进本地页
-    // 顶栏切换）；已绑定网盘才展示
-    final cloudCount = ref.watch(
-      boundCloudProvidersProvider.select((a) => a.valueOrNull?.length ?? 0),
-    );
 
     Widget entry({
       required IconData icon,
@@ -580,14 +390,6 @@ class _QuickEntries extends ConsumerWidget {
               count: '$localCount',
               onTap: () => context.push('/library?tab=0'),
             ),
-            if (cloudCount > 0)
-              entry(
-                icon: Icons.cloud_outlined,
-                themeSlot: 'mine.grid_cloud',
-                label: tr('网盘'),
-                count: '$cloudCount',
-                onTap: () => context.push('/cloud-disk'),
-              ),
           ],
         ),
       ),

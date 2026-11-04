@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../src/navigation/shell.dart';
-import '../../src/cloud/cloud_filename.dart';
 import '../../src/core/app_colors.dart';
 import '../../src/core/page_sort_prefs.dart';
 import '../../src/core/pinyin_key.dart';
@@ -750,21 +749,6 @@ class _RecentTile extends ConsumerWidget {
       p.startsWith('cloud://');
 
   String _titleFromPath(String p) {
-    // 网盘播放标识 cloud://<provider>/<accountId>/<urlEncodedFileJson>：
-    // 无 meta 的存量记录反解文件名兜底，避免整段编码串上屏
-    if (p.startsWith('cloud://')) {
-      try {
-        final segs = p.split('/');
-        if (segs.length >= 5) {
-          final raw = Uri.decodeComponent(segs.sublist(4).join('/'));
-          final j = jsonDecode(raw);
-          if (j is Map && j['name'] is String) {
-            return parseCloudFileName(j['name'] as String).title;
-          }
-        }
-      } catch (_) {}
-      return p;
-    }
     final name = p.split(RegExp(r'[\\/]')).last;
     final dot = name.lastIndexOf('.');
     return dot > 0 ? name.substring(0, dot) : name;

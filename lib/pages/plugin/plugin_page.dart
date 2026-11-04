@@ -14,8 +14,6 @@ import '../../src/core/app_colors.dart';
 import '../../src/core/application_logger.dart';
 import '../../src/core/haptics.dart';
 import '../../src/auth/account_api.dart';
-import '../../src/cloud/cloud_credentials_store.dart';
-import '../../src/cloud/cloud_registry.dart';
 import '../../src/core/settings.dart';
 import '../../src/navigation/shell.dart';
 import '../../src/plugin/plugin_engine.dart';
@@ -30,7 +28,6 @@ import '../../src/widgets/glass_appbar.dart';
 import '../../src/widgets/glass_settings.dart';
 import '../../src/widgets/page_search_bar.dart';
 import '../../src/widgets/press_scale.dart';
-import '../../src/widgets/predictive_dialog_route.dart';
 import '../../src/widgets/sheet_dialog.dart';
 import '../../src/widgets/source_tag.dart';
 import '../../src/i18n/i18n.dart';
@@ -66,13 +63,11 @@ class PluginPage extends ConsumerStatefulWidget {
 }
 
 class _PageRow {
-  const _PageRow.plugin(this.plugin) : cloudProviderId = null;
-  const _PageRow.cloud(this.cloudProviderId) : plugin = null;
+  const _PageRow.plugin(this.plugin);
 
-  final PluginSource? plugin;
-  final String? cloudProviderId;
+  final PluginSource plugin;
 
-  String get key => plugin?.id ?? 'cloud:$cloudProviderId';
+  String get key => plugin.id;
 }
 
 class _PluginPageState extends ConsumerState<PluginPage> with HidesShellChrome {
@@ -89,11 +84,7 @@ class _PluginPageState extends ConsumerState<PluginPage> with HidesShellChrome {
   bool _togglingAll = false;
   bool _savingAutoUpdate = false;
 
-  // 网盘伪音源行：每个已绑定网盘一条（开关/排序/删除=解绑），配置存 PluginPreferences
-  Map<String, int> _cloudAccountCounts = {};
-  Map<String, CloudSourcePref> _cloudPrefs = {};
   List<_PageRow> _rows = const [];
-  late final void Function() _cloudListenerReg = _onCloudStoreChanged;
 
   // 在线链接安装的取消状态与进度小黑条句柄（弹窗返回/取消键触发终止）
   bool _urlInstallCancelled = false;
@@ -122,12 +113,8 @@ class _PluginPageState extends ConsumerState<PluginPage> with HidesShellChrome {
       });
     }
     _loadAutoUpdatePref();
-    CloudCredentialsStore.instance.addListener(_cloudListenerReg);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _ensureVarsLoaded();
-        _loadCloudState();
-      }
+      if (mounted) _ensureVarsLoaded();
     });
   }
 
@@ -171,129 +158,12 @@ class _PluginPageState extends ConsumerState<PluginPage> with HidesShellChrome {
       overrideController.state = null;
     }
     _searchCtrl.dispose();
-    CloudCredentialsStore.instance.removeListener(_cloudListenerReg);
     super.dispose();
   }
 
-  void _onCloudStoreChanged() {
-    if (mounted) _loadCloudState();
-  }
-
-  Future<void> _loadCloudState() async {
-    final counts = <String, int>{};
-    for (final p in cloudProviders) {
-      try {
-        counts[p.id] = (await CloudCredentialsStore.instance.accountsFor(
-          p.id,
-        )).length;
-      } catch (_) {
-        counts[p.id] = 0; // 单盘查询失败不影响其余
-      }
-    }
-    final prefs = await PluginPreferences.getCloudSources();
-    if (!mounted) return;
-    setState(() {
-      _cloudAccountCounts = counts;
-      _cloudPrefs = prefs;
-    });
-  }
-
-  /// 每个已绑定网盘独立开关：关闭后搜索来源不含该盘、不再拉取
-  Future<void> _toggleCloudSource(String providerId) async {
-    final cur = _cloudPrefs[providerId]?.enabled ?? true;
-    await PluginPreferences.setCloudSourcePref(providerId, enabled: !cur);
-    if (!mounted) return;
-    setState(() {
-      _cloudPrefs[providerId] = CloudSourcePref(
-        enabled: !cur,
-        sortIndex: _cloudPrefs[providerId]?.sortIndex,
-      );
-    });
-  }
-
-  /// 展示行 = 插件行 + 已绑定网盘行（未绑定不显示；搜索过滤时只留插件行）。
-  /// 网盘行按 sortIndex（前方插件数）插入第一个 sortOrder >= idx 的插件之前。
+  /// 展示行 = 插件行，顺序与（过滤后的）插件列表一致。
   List<_PageRow> _buildRows(List<PluginSource> filteredPlugins) {
-    final rows = [for (final s in filteredPlugins) _PageRow.plugin(s)];
-    if (_query.trim().isNotEmpty) return rows;
-    final cloudRows = <_PageRow>[
-      for (final p in cloudProviders)
-        if ((_cloudAccountCounts[p.id] ?? 0) > 0) _PageRow.cloud(p.id),
-    ];
-    cloudRows.sort((a, b) {
-      final ia = _cloudPrefs[a.cloudProviderId]?.sortIndex ?? 1 << 30;
-      final ib = _cloudPrefs[b.cloudProviderId]?.sortIndex ?? 1 << 30;
-      return ia - ib;
-    });
-    final merged = <_PageRow>[];
-    var ci = 0;
-    for (final row in rows) {
-      final pIdx = row.plugin?.sortOrder ?? 0;
-      while (ci < cloudRows.length) {
-        final cIdx = _cloudPrefs[cloudRows[ci].cloudProviderId]?.sortIndex;
-        if (cIdx == null || cIdx > pIdx) break;
-        merged.add(cloudRows[ci++]);
-      }
-      merged.add(row);
-    }
-    while (ci < cloudRows.length) {
-      merged.add(cloudRows[ci++]);
-    }
-    return merged;
-  }
-
-  /// 删除网盘音源：确认后解绑该盘全部账号
-  Future<void> _confirmRemoveCloudSource(String providerId) async {
-    final name = cloudProviders
-        .where((p) => p.id == providerId)
-        .map((p) => p.displayName)
-        .firstOrNull;
-    final count = _cloudAccountCounts[providerId] ?? 0;
-    final ok = await showPredictiveDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(tr('删除网盘音源「{name}」', {'name': name ?? providerId})),
-        content: Text(tr('将同时解绑其下 {n} 个已绑定的网盘账号，绑定信息将无法恢复。', {'n': count})),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text(tr('取消')),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(tr('删除')),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    try {
-      final accounts = await CloudCredentialsStore.instance.accountsFor(
-        providerId,
-      );
-      for (final account in accounts) {
-        await CloudCredentialsStore.instance.removeAccount(
-          providerId,
-          account.accountId,
-        );
-      }
-      if (!mounted) return;
-      showXianYuToast(
-        context,
-        tr('已删除「{name}」音源并解绑 {n} 个账号', {
-          'name': name ?? providerId,
-          'n': accounts.length,
-        }),
-      );
-      await _loadCloudState();
-    } catch (e) {
-      AppLog.warn('plugin', '解绑网盘账号失败: $e');
-      if (mounted) showXianYuToast(context, tr('删除失败，请重试'));
-    }
+    return [for (final s in filteredPlugins) _PageRow.plugin(s)];
   }
 
   bool _autoUpdateOnStartup = false;
@@ -597,34 +467,13 @@ class _PluginPageState extends ConsumerState<PluginPage> with HidesShellChrome {
                           key: ValueKey(row.key),
                           child: Padding(
                             padding: const EdgeInsets.only(bottom: 8),
-                            child: plugin != null
-                                ? _PluginCard(
-                                    source: plugin,
-                                    index: i,
-                                    dragEnabled: _query.isEmpty,
-                                    hasVars: _hasVars[plugin.id] == true,
-                                    onUpdate: (ctx) =>
-                                        _updatePlugin(ctx, plugin),
-                                  )
-                                : _CloudCard(
-                                    providerId: row.cloudProviderId!,
-                                    index: i,
-                                    dragEnabled: _query.isEmpty,
-                                    accountCount:
-                                        _cloudAccountCounts[row
-                                            .cloudProviderId!] ??
-                                        0,
-                                    enabled:
-                                        _cloudPrefs[row.cloudProviderId!]
-                                            ?.enabled ??
-                                        true,
-                                    onToggle: () => _toggleCloudSource(
-                                      row.cloudProviderId!,
-                                    ),
-                                    onRemove: () => _confirmRemoveCloudSource(
-                                      row.cloudProviderId!,
-                                    ),
-                                  ),
+                            child: _PluginCard(
+                              source: plugin,
+                              index: i,
+                              dragEnabled: _query.isEmpty,
+                              hasVars: _hasVars[plugin.id] == true,
+                              onUpdate: (ctx) => _updatePlugin(ctx, plugin),
+                            ),
                           ),
                         );
                       },

@@ -195,33 +195,13 @@ class _LyricPreviewState extends ConsumerState<_LyricPreview>
     }
     _loading = true;
     try {
-      // cloud:// 曲目 isOnline 恒为 false（仅插件/直链源为 true），
-      // 必须显式加入，否则网盘曲目永远走本地 DB 分支拿不到内嵌歌词
-      if (item!.isOnline || item.path.startsWith('cloud://')) {
+      if (item!.isOnline) {
         final lines = _lyricLinesToViewItems(
           await ref.read(lyricsRepositoryProvider).fetchLyrics(item),
         );
         if (lines.isNotEmpty) _cacheLyrics(path, lines);
         if (!mounted) return;
         setState(() => _lines = lines);
-        // 云盘曲目：内嵌歌词可能晚到（慢 CDN 首探 2 分钟级），插件搜索
-        // 结果先显示；预探完成命中内嵌时再覆盖刷新（桌面同款行为）。
-        if (item.path.startsWith('cloud://')) {
-          unawaited(() async {
-            final meta = await ref
-                .read(cloudHeadMetaProvider.notifier)
-                .waitFor(item.path, timeout: const Duration(minutes: 3));
-            final raw = meta?.lyricsRaw;
-            if (!mounted || raw == null || raw.trim().isEmpty) return;
-            final emb = await compute(
-              _parseLyricsJson,
-              await parseLyrics(rawLyrics: raw),
-            );
-            if (!mounted || emb.isEmpty || path != widget.current?.path) return;
-            _cacheLyrics(path, emb);
-            setState(() => _lines = emb);
-          }());
-        }
       } else {
         final dbPath = await ref.read(dbPathProvider.future);
         final jsonStr = await getSongLyricsPayload(
@@ -703,11 +683,7 @@ class _TraditionalCover extends ConsumerWidget {
               CoverImage(
                 songPath: cur.path,
                 networkUrl: cur.coverUrl,
-                // 云盘曲目：预探命中的内嵌封面优先（响应式，探测完成即刷新）
-                thumbPath: cur.path.startsWith('cloud://')
-                    ? (ref.watch(cloudHeadMetaProvider)[cur.path]?.coverPath ??
-                        cur.coverPath)
-                    : cur.coverPath,
+                thumbPath: cur.coverPath,
                 width: size,
                 height: size,
                 radius: 23,
@@ -1119,26 +1095,19 @@ class _BigCover extends StatelessWidget {
             clipBehavior: Clip.antiAlias,
             child: cur == null
                 ? _placeholder(scheme, coverSize)
-                : Consumer(
-                    builder: (context, ref, _) => CoverImage(
-                      songPath: cur.path,
-                      networkUrl: cur.coverUrl,
-                      // 云盘曲目：预探命中的内嵌封面优先（响应式，探测完成即刷新）
-                      thumbPath: cur.path.startsWith('cloud://')
-                          ? (ref.watch(
-                                  cloudHeadMetaProvider)[cur.path]?.coverPath ??
-                              cur.coverPath)
-                          : cur.coverPath,
-                      width: coverSize,
-                      height: coverSize,
-                      radius: 31,
-                      highQuality: true,
-                      cacheWidth: CoverImage.fullCoverDecodePx(),
-                      gradient: [
-                        scheme.primary,
-                        scheme.primary.withValues(alpha: 0.72),
-                      ],
-                    ),
+                : CoverImage(
+                    songPath: cur.path,
+                    networkUrl: cur.coverUrl,
+                    thumbPath: cur.coverPath,
+                    width: coverSize,
+                    height: coverSize,
+                    radius: 31,
+                    highQuality: true,
+                    cacheWidth: CoverImage.fullCoverDecodePx(),
+                    gradient: [
+                      scheme.primary,
+                      scheme.primary.withValues(alpha: 0.72),
+                    ],
                   ),
           ),
         );

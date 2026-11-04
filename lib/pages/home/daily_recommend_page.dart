@@ -74,22 +74,6 @@ class _DailyRecommendPageState extends ConsumerState<DailyRecommendPage>
                 onTap: () => ref.invalidate(dailyRecommendProvider),
               ),
               data: (state) {
-                if (!state.loggedIn) {
-                  return _CenterAction(
-                    icon: Icons.person_outline,
-                    message: tr('登录后解锁每日推荐\n基于你的听歌记录，每天为你量身定制'),
-                    action: tr('去登录'),
-                    // 横屏：开右侧账号面板；竖屏走路由
-                    onTap: () {
-                      if (useLandscape(ref)) {
-                        ref.read(landscapeAccountOpenProvider.notifier).state =
-                            true;
-                      } else {
-                        context.push('/account');
-                      }
-                    },
-                  );
-                }
                 if (state.items.isEmpty) {
                   return _CenterAction(
                     icon: Icons.music_off_outlined,
@@ -99,11 +83,8 @@ class _DailyRecommendPageState extends ConsumerState<DailyRecommendPage>
                     onTap: () {
                       if (useLandscape(ref)) {
                         ref
-                                .read(
-                                  landscapeSettingsCategoryProvider.notifier,
-                                )
-                                .state =
-                            '/plugin-manage';
+                            .read(landscapeSettingsCategoryProvider.notifier)
+                            .state = '/plugin-manage';
                         context.push('/settings');
                       } else {
                         context.push('/plugin-manage');

@@ -153,22 +153,14 @@ class _DailyCard extends ConsumerWidget {
     final async = ref.watch(dailyRecommendProvider);
     final state = async.valueOrNull;
     if (!async.isLoading &&
-        (state == null || !state.loggedIn || state.items.isEmpty)) {
-      final notLoggedIn = state != null && !state.loggedIn;
+        (state == null || state.items.isEmpty)) {
       final hasError = async.hasError && state == null;
       return _CardContainer(
         onTap: hasError
             ? () => ref.invalidate(dailyRecommendProvider)
             : () {
-                // 横屏：登录开账号面板，插件走设置面板音源分类；竖屏走路由
-                if (notLoggedIn) {
-                  if (useLandscape(ref)) {
-                    ref.read(landscapeAccountOpenProvider.notifier).state =
-                        true;
-                  } else {
-                    context.push('/account');
-                  }
-                } else if (useLandscape(ref)) {
+                // 横屏：插件走设置面板音源分类；竖屏走路由
+                if (useLandscape(ref)) {
                   ref.read(landscapeSettingsCategoryProvider.notifier).state =
                       '/plugin-manage';
                   context.push('/settings');
@@ -184,8 +176,6 @@ class _DailyCard extends ConsumerWidget {
               child: Text(
                 hasError
                     ? tr('每日推荐获取失败，点击重试')
-                    : notLoggedIn
-                    ? tr('登录后解锁每日推荐')
                     : tr('添加本地音乐或安装音源插件后再试'),
                 style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
               ),

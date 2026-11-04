@@ -5,19 +5,19 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../core/application_logger.dart';
 import '../core/db_path.dart';
-import '../core/secure_store.dart' show kTokenSealPrefix, sealToken, unsealToken;
 import '../device/device_info.dart' show fetchStableDeviceId;
 import '../rust/api.dart';
-import 'server_models.dart';
-import '../i18n/i18n.dart';
 
 /// 官方后端地址（仅用于更新检查与设置页默认值展示；请求地址由 Rust 侧
 /// base_url.txt 或其内置默认决定，签名密钥只保留在 Rust 二进制内，
 /// 不再由 Dart 侧注入，也不再明文落盘）。
 const defaultAuthBaseUrl = 'https://api.xianyumusic.cn/api';
 
+/// 账号功能已整体移除（登录/注册/资料/云同步）。
+/// 保留的 `requestAction` 通道仅用于**匿名**内容接口（公告、更新检查、
+/// 热搜、排行榜、主题列表等）：永不附带 token、永不写入任何会话，
+/// 依赖账号的调用会得到服务端 401 并抛出 [AuthException]。
 class AuthUser {
   final String id;
   final String username;
@@ -35,24 +35,6 @@ class AuthUser {
     this.ciyuanxiId,
     this.role = '',
   });
-
-  factory AuthUser.fromJson(Map<String, dynamic> j) {
-    final idRaw = j['user_id'] ?? j['id'] ?? '';
-    final username = (j['username'] as String?) ?? '';
-    final nickname = ((j['nickname'] as String?)?.isNotEmpty ?? false)
-        ? (j['nickname'] as String)
-        : username;
-    final ciyuanxi = j['ciyuanxi_id'];
-    return AuthUser(
-      id: idRaw.toString(),
-      username: username,
-      nickname: nickname,
-      email: (j['email'] as String?) ?? '',
-      avatar: (j['avatar_url'] ?? j['avatar']) as String?,
-      ciyuanxiId: ciyuanxi?.toString(),
-      role: (j['role'] as String?) ?? '',
-    );
-  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -100,6 +82,7 @@ class AuthException implements Exception {
   String toString() => message;
 }
 
+/// 「被扫端」二维码登录返回（类型保留以便扫描相关页面编译；功能已移除）。
 class TvLoginScanInfo {
   final String appName;
   final String deviceId;
@@ -115,21 +98,17 @@ class TvLoginScanInfo {
   });
 
   factory TvLoginScanInfo.fromJson(Map<String, dynamic> j) {
-    final nickname = ((j['nickname'] as String?)?.isNotEmpty ?? false)
-        ? (j['nickname'] as String)
-        : ((j['username'] as String?) ?? '');
     return TvLoginScanInfo(
       appName: (j['app_name'] as String?) ?? '',
       deviceId: (j['device_id'] as String?) ?? '',
       location: (j['location'] as String?) ?? '',
-      nickname: nickname,
+      nickname: (j['nickname'] as String?) ?? '',
       ciyuanxiId: (j['ciyuanxi_id'] as String?) ?? '',
     );
   }
 }
 
-/// 「被扫端」二维码登录：generate_tv_login_code 的返回（本机为车机/平板/
-/// 电视等输入不便的设备，由已登录的手机扫码确认）。
+/// 「被扫端」二维码登录 code 信息（功能已移除，仅保留类型）。
 class TvLoginCodeInfo {
   final String code;
   final int expireSeconds;
@@ -143,101 +122,13 @@ class TvLoginPollStatus {
   bool get isLoggedIn => status == 'logged_in';
 }
 
-class HumanCaptcha {
-  final String captchaId;
-  final String question;
-  final int? expireSeconds;
-  const HumanCaptcha({
-    required this.captchaId,
-    required this.question,
-    this.expireSeconds,
-  });
-
-  factory HumanCaptcha.fromJson(Map<String, dynamic> j) => HumanCaptcha(
-        captchaId: (j['captcha_id'] ?? '').toString(),
-        question: (j['question'] ?? '').toString(),
-        expireSeconds: (j['expire_seconds'] as num?)?.toInt(),
-      );
-}
-
-class HumanCaptchaConfig {
-  final bool enabled;
-  final String provider;
-  final String siteKey;
-  const HumanCaptchaConfig({
-    this.enabled = false,
-    this.provider = 'off',
-    this.siteKey = '',
-  });
-
-  bool get isProviderEnabled => enabled && siteKey.isNotEmpty && provider != 'off';
-}
-
-class HumanCaptchaPayload {
-  final String captchaId;
-  final String captchaAnswer;
-  final String providerToken;
-  final String provider;
-  const HumanCaptchaPayload({
-    this.captchaId = '',
-    this.captchaAnswer = '',
-    this.providerToken = '',
-    this.provider = '',
-  });
-
-  bool get isProviderToken => providerToken.isNotEmpty;
-
-  Map<String, dynamic> toBodyFields() => isProviderToken
-      ? {
-          'captcha_token': providerToken,
-          'turnstile_token': providerToken,
-          'captcha_provider': provider,
-        }
-      : {
-          'captcha_id': captchaId,
-          'captcha_answer': captchaAnswer,
-        };
-}
-
 class AuthNotifier extends StateNotifier<AuthState> {
-  AuthNotifier(this._ref) : super(const AuthState()) {
-    init();
-  }
-
+  AuthNotifier(this._ref) : super(const AuthState());
   final Ref _ref;
-  final Random _rand = Random();
-
-  /// 凭据恢复（init）完成信号。恢复是异步的（含安全存储解密），
-  /// 若登录态在 token 就绪前对外可见，启动期请求会无 token 外发，
-  /// 服务端 401 后本地凭据被误清——表现为重启丢登录。
-  final Completer<void> _restoreDone = Completer<void>();
-
-  /// 凭据恢复完成信号（恢复异常也会触发，不超时）
-  Future<void> get whenRestored => _restoreDone.future;
-
-  /// 请求闸门：恢复落定前不发任何账号请求。超时兜底防止极端挂起
-  /// 把所有请求卡死。
-  Future<void> _ensureRestored() {
-    return _restoreDone.future.timeout(
-      const Duration(seconds: 6),
-      onTimeout: () {
-        AppLog.warn('auth', '凭据恢复超时，请求以无 token 状态继续');
-      },
-    );
-  }
-
-  static (HumanCaptchaConfig, DateTime)? _captchaConfigCache;
-
-  String? _token;
-
-  AuthState get currentState => state;
-
-  /// 当前登录态 token（未登录为 null）。
-  /// 供云端手表链路 relay 在 hello 帧绑定房间归属（渗透 V-08）。
-  String? get authToken => _token;
 
   Future<String> _dataDir() => _ref.read(appDataDirProvider.future);
 
+  /// 稳定设备标识（内容接口的匿名维度参数；不含任何账号信息）。
   Future<String> _deviceId() async {
     final prefs = await SharedPreferences.getInstance();
     final stable = await fetchStableDeviceId();
@@ -249,7 +140,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
     var id = prefs.getString('deviceId');
     if (id == null || id.isEmpty) {
-      id = _randHex(16);
+      const hex = '0123456789abcdef';
+      final sb = StringBuffer();
+      final rng = Random.secure();
+      for (var i = 0; i < 16; i++) {
+        sb.write(hex[rng.nextInt(16)]);
+      }
+      id = sb.toString();
       await prefs.setString('deviceId', id);
     }
     return id;
@@ -257,93 +154,27 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<String> deviceId() => _deviceId();
 
-  String _randHex(int len) {
-    const hex = '0123456789abcdef';
-    final sb = StringBuffer();
-    for (var i = 0; i < len; i++) {
-      sb.write(hex[_rand.nextInt(16)]);
-    }
-    return sb.toString();
-  }
+  /// 会话恢复即完成：本构建无账号体系，不存在会话。
+  Future<void> get whenRestored => Future<void>.value();
 
-  Future<void> init() async {
-    try {
-      final dir = await _dataDir();
-      // base_url / api_secret 不再由 Dart 侧写盘：Rust 侧缺文件时用内置默认，
-      // 自建服务器用户在设置页保存的自定义值不会再被启动覆盖
-      final credsJson = await authGetCredentials(dataDir: dir);
-      if (credsJson.trim().isNotEmpty && credsJson != 'null') {
-        final j = jsonDecode(credsJson) as Map<String, dynamic>;
-        final stored = (j['token'] as String?) ?? '';
-        final userJson = j['user'];
-        AuthUser? user;
-        if (userJson is Map<String, dynamic>) {
-          user = AuthUser.fromJson(userJson);
-        }
-        if (stored.isNotEmpty) {
-          final token = await unsealToken(stored);
-          if (token == null || token.isEmpty) {
-            // 密钥暂不可用/密文损坏：本次按未登录展示，但保留加密凭据——
-            // Keystore 偶发故障恢复后，下次启动仍可解密救回；删盘会把
-            // 瞬时故障放大成永久登出
-            AppLog.warn('auth', 'token 解密失败，保留凭据待下次恢复');
-          } else {
-            _token = token;
-            if (!stored.startsWith(kTokenSealPrefix)) {
-              // 旧版明文 token：升级为加密落盘
-              await authSaveCredentials(
-                dataDir: dir,
-                token: await sealToken(token),
-                userJson: jsonEncode(user?.toJson()),
-              );
-            }
-            // state 必须等 _token 就绪后再置：壳层首帧会触发云同步/启动
-            // 通知等带 ciyuanxi_id 的 USER_BOUND 请求，先置 state 会让
-            // 它们无 token 外发 → 服务端 401 → 误清登录态
-            if (user != null) {
-              state = AuthState(user: user);
-            }
-          }
-        }
-      }
-    } catch (e) {
-      AppLog.warn('auth', '凭据恢复失败: $e');
-    } finally {
-      _restoreDone.complete();
-      // 恢复完成后静默拉一次最新资料：本地缓存的用户信息可能落后
-      // （头像/昵称在他端修改或审核刚通过），不刷新的话「我的」页
-      // 头像要进过账号二级页（getProfile）才会更新
-      if (_token != null && _token!.isNotEmpty) {
-        unawaited(getProfile());
-      }
-    }
-  }
+  AuthState get currentState => state;
 
+  /// 永远为 null：无登录态。
+  String? get authToken => null;
+
+  /// 匿名内容请求通道：不附带 token、不落任何会话。
   Future<Map<String, dynamic>> requestAction(
       String action, Map<String, dynamic> body,
       {int? fetchTimeoutMs}) async {
-    await _ensureRestored();
-    final dir = await _dataDir();
-    final finalBody = Map<String, dynamic>.from(body);
-    final token = _token;
-    final hasToken = token != null && token.isNotEmpty;
-    if (hasToken && !finalBody.containsKey('token')) {
-      finalBody['token'] = token;
-    }
     final res = await authAuthedRequest(
-      dataDir: dir,
+      dataDir: await _dataDir(),
       action: action,
-      bodyJson: jsonEncode(finalBody),
+      bodyJson: jsonEncode(body),
       fetchTimeoutMs: fetchTimeoutMs == null ? null : BigInt.from(fetchTimeoutMs),
     );
     final j = jsonDecode(res) as Map<String, dynamic>;
     final code = (j['code'] as num?)?.toInt() ?? -1;
     final msg = (j['msg'] as String?) ?? '';
-    // 请求本身没带 token（未登录/恢复中被超时放行）：401 属预期，
-    // 不能当会话失效清掉登录态
-    if (hasToken && _isSessionExpired(code, msg)) {
-      await _handleSessionExpired();
-    }
     if (code != 200) {
       throw AuthException(msg.isNotEmpty ? msg : '请求失败（code $code）');
     }
@@ -353,579 +184,39 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<dynamic> requestActionList(
       String action, Map<String, dynamic> body,
       {int? fetchTimeoutMs}) async {
-    await _ensureRestored();
-    final dir = await _dataDir();
-    final finalBody = Map<String, dynamic>.from(body);
-    final token = _token;
-    final hasToken = token != null && token.isNotEmpty;
-    if (hasToken && !finalBody.containsKey('token')) {
-      finalBody['token'] = token;
-    }
     final res = await authAuthedRequest(
-      dataDir: dir,
+      dataDir: await _dataDir(),
       action: action,
-      bodyJson: jsonEncode(finalBody),
-      fetchTimeoutMs:
-          fetchTimeoutMs == null ? null : BigInt.from(fetchTimeoutMs),
+      bodyJson: jsonEncode(body),
+      fetchTimeoutMs: fetchTimeoutMs == null ? null : BigInt.from(fetchTimeoutMs),
     );
     final j = jsonDecode(res) as Map<String, dynamic>;
     final code = (j['code'] as num?)?.toInt() ?? -1;
     final msg = (j['msg'] as String?) ?? '';
-    // 同 requestAction：无 token 的 401 不当会话失效处理
-    if (hasToken && _isSessionExpired(code, msg)) {
-      await _handleSessionExpired();
-    }
     if (code != 200) {
       throw AuthException(msg.isNotEmpty ? msg : '请求失败（code $code）');
     }
     return j['data'];
   }
 
-  static final _sessionExpiredRe =
-      RegExp(r'登录状态已失效|登录已过期|登录状态与账号不匹配');
+  void consumeSessionExpired() {}
 
-  bool _isSessionExpired(int code, String msg) =>
-      code == 401 && _sessionExpiredRe.hasMatch(msg);
+  void clearError() {}
 
-  /// 本次会话内是否发生过真实登录（区别于冷启动从盘恢复的凭据）
-  bool _loggedInThisSession = false;
+  Future<void> logout() async {}
 
-  Future<void> _handleSessionExpired() async {
-    // 仅清内存态，不删本地凭据：服务端 401 也可能来自 DB 抖动等误判，
-    // 删盘会把可恢复的登录态变成永久登出（重启丢登录的推手之一）。
-    // 凭据本身是 AES 密文，留盘无泄露面；显式登出（logout）才真正清盘。
-    _token = null;
-    // 冷启动恢复的陈旧凭据（本次会话内从未登录过）失效时静默清空：
-    // 用户从没在界面上见过"已登录"，弹"请重新登录"只会困惑
-    if (!_loggedInThisSession) {
-      state = const AuthState();
-      return;
-    }
-    state = const AuthState(sessionExpired: true);
+  Future<void> updateNicknameLocally(String newNickname) async {}
+
+  Future<TvLoginCodeInfo> generateTvLoginCode() async {
+    throw AuthException('账号功能已移除');
   }
 
-  void consumeSessionExpired() {
-    if (state.sessionExpired) {
-      state = const AuthState();
-    }
-  }
-
-  Future<void> _saveAuth(String token, Map<String, dynamic> data) async {
-    final user = AuthUser.fromJson(data);
-    _loggedInThisSession = true;
-    await _persistAuth(token, user);
-  }
-
-  Future<void> _persistAuth(String token, AuthUser user) async {
-    final dir = await _dataDir();
-    _token = token;
-    // token 加密后落盘（密钥在系统安全存储），文件泄露不泄露明文
-    await authSaveCredentials(
-      dataDir: dir,
-      token: await sealToken(token),
-      userJson: jsonEncode(user.toJson()),
-    );
-    state = AuthState(user: user);
-  }
-
-  Future<HumanCaptcha> fetchCaptcha() async {
-    final data = await requestAction('get_captcha', {'purpose': 'auth'});
-    return HumanCaptcha.fromJson(data);
-  }
-
-  Future<HumanCaptchaConfig> fetchCaptchaConfig() async {
-    final cached = _captchaConfigCache;
-    if (cached != null &&
-        DateTime.now().difference(cached.$2) < const Duration(minutes: 10)) {
-      return cached.$1;
-    }
-    try {
-      final data = await requestAction('email_get_captcha_config', {});
-      final cfg = HumanCaptchaConfig(
-        enabled: (data['enabled'] == true) &&
-            (data['site_key'] ?? '').toString().isNotEmpty,
-        provider: (data['provider'] ?? 'off').toString(),
-        siteKey: (data['site_key'] ?? '').toString(),
-      );
-      _captchaConfigCache = (cfg, DateTime.now());
-      return cfg;
-    } catch (_) {
-      if (cached != null) return cached.$1;
-      return const HumanCaptchaConfig();
-    }
-  }
-
-  Future<void> verifyCaptcha(HumanCaptchaPayload payload) async {
-    if (payload.isProviderToken) return;
-    await requestAction('verify_captcha', {
-      'purpose': 'auth',
-      'captcha_id': payload.captchaId,
-      'captcha_answer': payload.captchaAnswer,
-    });
-  }
-
-  Future<String> sendCode(String email, String type,
-      {HumanCaptchaPayload? captcha}) async {
-    final data = await requestAction('send_verify_code', {
-      'email': email,
-      'type': type,
-      if (captcha != null) ...captcha.toBodyFields(),
-    });
-    return (data['message'] as String?) ??
-        (data['msg'] as String?) ??
-        tr('验证码已发送到邮箱');
-  }
-
-  Future<void> login({
-    required String ciyuanxiId,
-    required String password,
-    HumanCaptchaPayload? captcha,
-  }) async {
-    state = state.copyWith(loading: true, clearError: true);
-    try {
-      final data = await requestAction('user_login', {
-        'ciyuanxi_id': ciyuanxiId.trim(),
-        'password': password,
-        'device_id': await _deviceId(),
-        if (captcha != null) ...captcha.toBodyFields(),
-      });
-      final token = data['token'];
-      if (token == null || token.toString().isEmpty) {
-        throw AuthException(tr('登录响应无效'));
-      }
-      await _saveAuth(token.toString(), data);
-    } catch (e) {
-      state = state.copyWith(loading: false, error: _msg(e, tr('登录失败')));
-    }
-  }
-
-  Future<void> loginByEmail({
-    required String email,
-    required String code,
-    HumanCaptchaPayload? captcha,
-  }) async {
-    state = state.copyWith(loading: true, clearError: true);
-    try {
-      final data = await requestAction('login_by_code', {
-        'email': email.trim(),
-        'verify_code': code.trim(),
-        'device_id': await _deviceId(),
-        if (captcha != null) ...captcha.toBodyFields(),
-      });
-      final token = data['token'];
-      if (token == null || token.toString().isEmpty) {
-        throw AuthException(tr('登录响应无效'));
-      }
-      await _saveAuth(token.toString(), data);
-    } catch (e) {
-      state = state.copyWith(loading: false, error: _msg(e, tr('登录失败')));
-    }
-  }
-
-  Future<void> register({
-    required String ciyuanxiId,
-    required String nickname,
-    required String password,
-    required String email,
-    required String code,
-    HumanCaptchaPayload? captcha,
-  }) async {
-    state = state.copyWith(loading: true, clearError: true);
-    try {
-      final data = await requestAction('register', {
-        'ciyuanxi_id': ciyuanxiId.trim(),
-        'nickname': nickname.trim(),
-        'password': password,
-        'email': email.trim(),
-        'verify_code': code.trim(),
-        'device_id': await _deviceId(),
-        if (captcha != null) ...captcha.toBodyFields(),
-      });
-      final token = data['token'];
-      if (token == null || token.toString().isEmpty) {
-        throw AuthException(tr('注册响应无效'));
-      }
-      await _saveAuth(token.toString(), data);
-    } catch (e) {
-      state = state.copyWith(loading: false, error: _msg(e, tr('注册失败')));
-    }
-  }
-
-  Future<TvLoginScanInfo?> scanTvLogin(String code) async {
-    final user = state.user;
-    final ciyuanxiId = user?.ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) return null;
-    final data = await requestAction('scan_tv_login', {
-      'code': code.trim(),
-      'ciyuanxi_id': ciyuanxiId,
-    });
-    final info = TvLoginScanInfo.fromJson(data);
-    if (info.nickname.isEmpty) {
-      return TvLoginScanInfo(
-        appName: info.appName,
-        deviceId: info.deviceId,
-        location: info.location,
-        nickname: ciyuanxiId,
-        ciyuanxiId: ciyuanxiId,
-      );
-    }
-    return info;
+  Future<TvLoginPollStatus> pollTvLoginStatus(String code) async {
+    throw AuthException('账号功能已移除');
   }
 
   Future<void> confirmTvLogin(String code) async {
-    final user = state.user;
-    final ciyuanxiId = user?.ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('请先登录'));
-    }
-    await requestAction('confirm_tv_login', {
-      'code': code.trim(),
-      'ciyuanxi_id': ciyuanxiId,
-    });
-  }
-
-  /// 「被扫端」：生成本机登录二维码（与桌面端 generate_tv_login_code
-  /// 同一服务端接口，二维码内容由调用方拼 `xianyumusic://tvlogin/<code>`）。
-  Future<TvLoginCodeInfo> generateTvLoginCode() async {
-    final data = await requestAction('generate_tv_login_code', {
-      'device_id': await _deviceId(),
-      'location': '',
-    });
-    return TvLoginCodeInfo(
-      code: (data['code'] ?? '').toString(),
-      expireSeconds: (data['expire_seconds'] as num?)?.toInt() ?? 300,
-    );
-  }
-
-  /// 「被扫端」：轮询本机二维码登录状态；logged_in 时直接持久化登录态
-  /// （与 user_login 同一响应结构，复用 _saveAuth）。单次失败抛
-  /// AuthException，由调用方决定忽略（网络抖动）或判过期。
-  Future<TvLoginPollStatus> pollTvLoginStatus(String code) async {
-    final data = await requestAction('poll_tv_login_status', {
-      'code': code.trim(),
-      'device_id': await _deviceId(),
-    });
-    final status = (data['status'] ?? 'pending').toString();
-    if (status == 'logged_in') {
-      final token = (data['token'] ?? '').toString();
-      if (token.isEmpty) throw AuthException(tr('登录响应无效'));
-      await _saveAuth(token, data);
-    }
-    return TvLoginPollStatus(status: status);
-  }
-
-  void setError(String message) {
-    state = state.copyWith(loading: false, error: message);
-  }
-
-  void clearError() {
-    if (state.error == null) return;
-    state = state.copyWith(clearError: true);
-  }
-
-  Future<void> logout() async {
-    try {
-      final dir = await _dataDir();
-      await authClearCredentials(dataDir: dir);
-    } catch (e) {
-      AppLog.debug('auth', '登出时清理本地凭据失败: $e');
-    }
-    _token = null;
-    state = const AuthState();
-  }
-
-  Future<void> updateNicknameLocally(String newNickname) async {
-    final user = state.user;
-    final token = _token;
-    if (user == null || token == null || token.isEmpty) return;
-    final next = AuthUser(
-      id: user.id,
-      username: user.username,
-      nickname: newNickname,
-      email: user.email,
-      avatar: user.avatar,
-      ciyuanxiId: user.ciyuanxiId,
-      role: user.role,
-    );
-    await _persistAuth(token, next);
-  }
-
-  Future<String> updateCiyuanxiId({
-    required String oldCiyuanxiId,
-    required String newCiyuanxiId,
-    required String password,
-  }) async {
-    final data = await requestAction('update_ciyuanxi_id', {
-      'ciyuanxi_id': oldCiyuanxiId,
-      'new_ciyuanxi_id': newCiyuanxiId,
-      'password': password,
-    });
-    final newId = (data['ciyuanxi_id'] ?? newCiyuanxiId).toString();
-    final user = state.user;
-    if (user != null) {
-      await _persistAuth(
-        _token ?? '',
-        AuthUser(
-          id: user.id,
-          username: user.username,
-          nickname: user.nickname,
-          email: user.email,
-          avatar: user.avatar,
-          ciyuanxiId: newId,
-          role: user.role,
-        ),
-      );
-    }
-    return newId;
-  }
-
-  Future<String> bindEmail({
-    required String ciyuanxiId,
-    required String email,
-    required String verifyCode,
-  }) async {
-    final data = await requestAction('bind_email', {
-      'ciyuanxi_id': ciyuanxiId,
-      'email': email,
-      'verify_code': verifyCode,
-    });
-    final bound = (data['email'] ?? email).toString();
-    final user = state.user;
-    if (user != null) {
-      await _persistAuth(
-        _token ?? '',
-        AuthUser(
-          id: user.id,
-          username: user.username,
-          nickname: user.nickname,
-          email: bound,
-          avatar: user.avatar,
-          ciyuanxiId: user.ciyuanxiId,
-          role: user.role,
-        ),
-      );
-    }
-    return bound;
-  }
-
-  Future<void> resetPassword({
-    required String email,
-    required String verifyCode,
-    required String newPassword,
-    HumanCaptchaPayload? captcha,
-  }) async {
-    await requestAction('reset_password', {
-      'email': email,
-      'verify_code': verifyCode,
-      'new_password': newPassword,
-      if (captcha != null) ...captcha.toBodyFields(),
-    });
-  }
-
-  Future<void> preVerifyDeleteAccount({
-    required String verifyCode,
-    required String password,
-  }) async {
-    final user = state.user;
-    if (user == null) throw AuthException(tr('未登录'));
-    final ciyuanxiId = user.ciyuanxiId ?? user.id;
-    if (ciyuanxiId.isEmpty) throw AuthException(tr('未获取到当前账号信息，请重新登录'));
-    if (password.isEmpty) throw AuthException(tr('请输入登录密码'));
-    if (verifyCode.isEmpty) throw AuthException(tr('请输入邮箱验证码'));
-    await requestAction('preverify_delete_account', {
-      'ciyuanxi_id': ciyuanxiId,
-      'email': user.email,
-      'verify_code': verifyCode,
-      'password': password,
-    });
-  }
-
-  Future<void> deleteAccount({
-    required String verifyCode,
-    required String password,
-  }) async {
-    final user = state.user;
-    if (user == null) throw AuthException(tr('未登录'));
-    final ciyuanxiId = user.ciyuanxiId ?? user.id;
-    if (ciyuanxiId.isEmpty) throw AuthException(tr('未获取到当前账号信息，请重新登录'));
-    if (password.isEmpty) throw AuthException(tr('请输入登录密码'));
-    await requestAction('delete_account', {
-      'ciyuanxi_id': ciyuanxiId,
-      'email': user.email,
-      'verify_code': verifyCode,
-      'password': password,
-    });
-    await logout();
-  }
-
-  Future<void> changePassword({
-    required String oldPassword,
-    required String newPassword,
-    required String code,
-  }) async {
-    final user = state.user;
-    final ciyuanxiId = user?.ciyuanxiId;
-    if (ciyuanxiId == null || ciyuanxiId.isEmpty) {
-      throw AuthException(tr('未获取到弦予号，无法修改密码，请重新登录'));
-    }
-    await requestAction('change_password', {
-      'ciyuanxi_id': ciyuanxiId,
-      'old_password': oldPassword,
-      'new_password': newPassword,
-      'code': code,
-    });
-  }
-
-  Future<AuthUser?> getProfile() async {
-    final user = state.user;
-    if (user == null) return null;
-    try {
-      final data = await requestAction('get_user_info', {
-        'ciyuanxi_id': user.ciyuanxiId ?? user.id,
-      }, fetchTimeoutMs: 15000);
-      final next = AuthUser.fromJson(data);
-      final token = _token;
-      if (token != null && token.isNotEmpty) {
-        await _persistAuth(token, next);
-      }
-      return next;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<({AuthUser user, bool nicknamePending})> updateProfile({
-    required String nickname,
-    String? avatar,
-  }) async {
-    final user = state.user;
-    final token = _token;
-    if (user == null || token == null || token.isEmpty) {
-      throw AuthException(tr('未登录'));
-    }
-    final data = await requestAction('update_profile', {
-      'token': token,
-      'ciyuanxi_id': user.ciyuanxiId ?? '',
-      'username': nickname,
-      'nickname': nickname,
-      'avatar': avatar ?? '',
-    });
-    final nicknamePending =
-        data['nickname_pending'] == true || data['status'] == 'pending';
-    final nextUser = data['user'] is Map<String, dynamic>
-        ? AuthUser.fromJson(data['user'] as Map<String, dynamic>)
-        : AuthUser(
-            id: user.id,
-            username: user.username,
-            nickname: user.nickname,
-            email: user.email,
-            avatar: avatar ?? user.avatar,
-            ciyuanxiId: user.ciyuanxiId,
-            role: user.role,
-          );
-    await _persistAuth(token, nextUser);
-    return (user: nextUser, nicknamePending: nicknamePending);
-  }
-
-  Future<String> getNicknameStatus() async {
-    final user = state.user;
-    if (user == null) return 'none';
-    try {
-      final data = await requestAction('get_nickname_status', {
-        'ciyuanxi_id': user.ciyuanxiId ?? user.id,
-      }, fetchTimeoutMs: 15000);
-      final status = (data['status'] ?? 'none').toString();
-      if (status == 'pending' || status == 'rejected') return status;
-      return 'none';
-    } catch (_) {
-      return 'none';
-    }
-  }
-
-  Future<ProfileChangeLimitStatus> getNicknameChangeLimitStatus() async {
-    final user = state.user;
-    if (user == null) return const ProfileChangeLimitStatus();
-    try {
-      final data = await requestAction('get_nickname_status', {
-        'ciyuanxi_id': user.ciyuanxiId ?? user.id,
-      }, fetchTimeoutMs: 15000);
-      final raw = (data['status'] ?? 'none').toString();
-      final status = (raw == 'pending' || raw == 'rejected') ? raw : 'none';
-      return ProfileChangeLimitStatus(
-        status: status,
-        todayBlocked: data['today_blocked'] == true,
-        blockMessage: (data['block_message'] ?? '').toString(),
-      );
-    } catch (_) {
-      return const ProfileChangeLimitStatus();
-    }
-  }
-
-  Future<void> uploadAvatar(String avatarData) async {
-    final user = state.user;
-    if (user == null) throw AuthException(tr('未登录'));
-    await requestAction('upload_avatar', {
-      'ciyuanxi_id': user.ciyuanxiId ?? user.id,
-      'avatar_data': avatarData,
-    }, fetchTimeoutMs: 55000);
-  }
-
-  Future<String> getAvatarStatus() async {
-    final user = state.user;
-    if (user == null) return 'none';
-    try {
-      final data = await requestAction('get_avatar_status', {
-        'ciyuanxi_id': user.ciyuanxiId ?? user.id,
-      }, fetchTimeoutMs: 15000);
-      final status = (data['status'] ?? 'none').toString();
-      if (status == 'pending' || status == 'rejected') return status;
-      return 'none';
-    } catch (_) {
-      return 'none';
-    }
-  }
-
-  Future<ProfileChangeLimitStatus> getAvatarChangeLimitStatus() async {
-    final user = state.user;
-    if (user == null) return const ProfileChangeLimitStatus();
-    try {
-      final data = await requestAction('get_avatar_status', {
-        'ciyuanxi_id': user.ciyuanxiId ?? user.id,
-      }, fetchTimeoutMs: 15000);
-      final raw = (data['status'] ?? 'none').toString();
-      final status = (raw == 'pending' || raw == 'rejected') ? raw : 'none';
-      return ProfileChangeLimitStatus(
-        status: status,
-        todayBlocked: data['today_blocked'] == true,
-        blockMessage: (data['block_message'] ?? '').toString(),
-      );
-    } catch (_) {
-      return const ProfileChangeLimitStatus();
-    }
-  }
-
-  Future<BanStatus> checkBanStatus() async {
-    final user = state.user;
-    if (user == null) return const BanStatus();
-    try {
-      final data = await requestAction('check_ban_status', {
-        'ciyuanxi_id': user.ciyuanxiId ?? user.id,
-        'device_id': await _deviceId(),
-      }, fetchTimeoutMs: 15000);
-      return BanStatus.fromJson(data);
-    } catch (_) {
-      return const BanStatus();
-    }
-  }
-
-  String _msg(Object e, String fallback) {
-    if (e is AuthException) return e.message;
-    final s = e.toString();
-    if (s.contains('network') || s.contains('Failed to fetch')) {
-      return tr('网络异常，请检查网络连接');
-    }
-    if (s.contains('timeout')) return tr('请求超时，请稍后重试');
-    return fallback;
+    throw AuthException('账号功能已移除');
   }
 }
 

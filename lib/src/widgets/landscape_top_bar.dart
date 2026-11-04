@@ -11,7 +11,6 @@ import '../theme/theme_icon.dart';
 import '../navigation/shell.dart'
     show
         kLandscapeBrandShortMinRail,
-        landscapeAccountOpenProvider,
         landscapeContentPathProvider,
         landscapeDetailProvider,
         landscapeDownloadOpenProvider,
@@ -125,7 +124,6 @@ class LandscapeGlobalTopBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final downloadOpen = ref.watch(landscapeDownloadOpenProvider);
-    final accountOpen = ref.watch(landscapeAccountOpenProvider);
     final contentPath = ref.watch(landscapeContentPathProvider);
     final playlistOpenId = ref.watch(landscapePlaylistOpenProvider);
     final libSel = ref.watch(landscapeLibraryProvider);
@@ -137,18 +135,12 @@ class LandscapeGlobalTopBar extends ConsumerWidget {
         searchOpen ||
         playlistOpenId != null ||
         downloadOpen ||
-        accountOpen ||
         contentPath != null ||
         detailOpen ||
         libSel != null ||
         currentIndex != 0;
 
     void handleBack() {
-      final acc = ref.read(landscapeAccountOpenProvider.notifier);
-      if (acc.state) {
-        acc.state = false;
-        return;
-      }
       final cp = ref.read(landscapeContentPathProvider.notifier);
       if (cp.state != null) {
         cp.state = null;

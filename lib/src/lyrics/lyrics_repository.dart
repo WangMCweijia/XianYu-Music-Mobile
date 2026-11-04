@@ -6,11 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/application_logger.dart';
 import '../core/app_http.dart';
 import '../core/db_path.dart';
-import '../cloud/cloud_credentials_store.dart';
-import '../cloud/cloud_filename.dart';
-import '../cloud/cloud_head_meta.dart';
-import '../cloud/cloud_registry.dart';
-import '../cloud/cloud_types.dart';
 import '../i18n/i18n.dart';
 import '../player/player_provider.dart';
 import '../plugin/plugin_backup_import.dart';
@@ -151,47 +146,6 @@ class LyricsRepository {
       }
       return '';
     }
-    if (item.path.startsWith('cloud://')) {
-      // 内嵌歌词优先（网盘曲目头部元数据预探结果，索引命中零开销；
-      // 播放期兜底在途时短暂等待）。无内嵌再按文件名反解走插件搜索
-      // （同 DLNA 被投链路）。
-      try {
-        final notifier = _ref.read(cloudHeadMetaProvider.notifier);
-        final meta =
-            notifier.entryFor(item.path) ?? await notifier.waitFor(item.path);
-        final embedded = meta?.lyricsRaw;
-        if (embedded != null && embedded.trim().isNotEmpty) {
-          AppLog.info('lyric', '网盘曲目内嵌歌词命中: len=${embedded.length}');
-          return await parseLyrics(rawLyrics: embedded);
-        }
-      } catch (e) {
-        AppLog.debug('lyric', '网盘内嵌歌词读取失败: $e');
-      }
-      // 同目录同名 .lrc 伴生歌词：用户自配的歌词文件，准确性高于文件名
-      // 反解的在线搜索，插件兜底前先探一次。
-      final lrc = await _fetchCloudCompanionLrc(item);
-      if (lrc != null) {
-        AppLog.info('lyric', '网盘伴生 .lrc 命中: len=${lrc.length}');
-        return await parseLyrics(rawLyrics: lrc);
-      }
-      var probe = item;
-      if (probe.artist.trim().isEmpty) {
-        final parts = parseCloudFileName(probe.title);
-        probe = QueueItem(
-          path: probe.path,
-          title: parts.title,
-          artist: parts.artist ?? '',
-          album: '',
-        );
-      }
-      final online = await _searchCastLyricSource(probe);
-      if (online != null) {
-        final payload = await _fetchLyricsJson(online);
-        if (payload.isNotEmpty && payload != 'null') return payload;
-      }
-      AppLog.debug('lyric', '网盘曲目无插件歌词: ${item.title}');
-      return '';
-    }
     if (item.path.startsWith('http://') || item.path.startsWith('https://')) {
       // DLNA 直传歌词（桌面端随投屏下发）优先，失败回退插件搜索
       final directUrl = item.lyricUrl;
@@ -227,61 +181,6 @@ class LyricsRepository {
     ).timeout(const Duration(seconds: 8));
     if (res.statusCode != HttpStatus.ok) return '';
     return await res.transform(utf8.decoder).join();
-  }
-
-  /// 网盘同目录同名 .lrc 伴生歌词：按播放上下文取 provider/凭据，列同目录
-  /// 找 `<音频主名>.lrc`（忽略大小写；目录大时分页翻找，最多 3 页），命中
-  /// 后取直链拉文本。分享免转存直链无目录归属，跳过。任何一步失败静默
-  /// 返回 null，交由后续插件搜索兜底。
-  Future<String?> _fetchCloudCompanionLrc(QueueItem item) async {
-    final ctx = CloudPlayContext.tryParse(item.cloudInfoJson);
-    if (ctx == null || ctx.share != null) return null;
-    final parentId = ctx.file.parentId;
-    if (parentId == null || parentId.isEmpty) return null;
-    final audioName = ctx.file.name;
-    final dot = audioName.lastIndexOf('.');
-    final base = dot > 0 ? audioName.substring(0, dot) : audioName;
-    if (base.trim().isEmpty) return null;
-    final wanted = '$base.lrc';
-    try {
-      final provider = cloudProviderById(ctx.provider);
-      if (provider == null) return null;
-      var cred = ctx.accountId == '_' || ctx.accountId.isEmpty
-          ? null
-          : await CloudCredentialsStore.instance.credFor(
-              provider.id,
-              ctx.accountId,
-            );
-      cred ??= await CloudCredentialsStore.instance.soleCredFor(provider.id);
-      if (cred == null) return null;
-
-      CloudFile? lrcFile;
-      String? cursor;
-      for (var page = 0; page < 3 && lrcFile == null; page++) {
-        final listed = await provider.listDir(cred, parentId, cursor: cursor);
-        for (final f in listed.files) {
-          if (!f.isDir && f.name.toLowerCase() == wanted.toLowerCase()) {
-            lrcFile = f;
-            break;
-          }
-        }
-        cursor = listed.nextCursor;
-        if (cursor == null || cursor.isEmpty) break;
-      }
-      if (lrcFile == null) return null;
-
-      final link = await provider.getDirectLink(cred, lrcFile);
-      final res = await appGet(
-        Uri.parse(link.url),
-        headers: link.headers.isNotEmpty ? link.headers : null,
-      ).timeout(const Duration(seconds: 10));
-      if (res.statusCode != HttpStatus.ok) return null;
-      final text = await res.transform(utf8.decoder).join();
-      return text.trim().isEmpty ? null : text;
-    } catch (e) {
-      AppLog.debug('lyric', '网盘伴生 .lrc 探测失败: $e');
-      return null;
-    }
   }
 
   Future<QueueItem?> _searchCastLyricSource(QueueItem item) async {

@@ -89,8 +89,6 @@ extension _LibraryFolderPageViews on _LibraryFolderPageState {
                       ),
                       const SizedBox(height: 16),
                       const _RemoteLibraryCard(),
-                      const SizedBox(height: 16),
-                      const _CloudDrivesCard(),
                       if (root.isNotEmpty) ...[
                         const SizedBox(height: 16),
                         Padding(
@@ -250,29 +248,12 @@ extension _LibraryFolderPageViews on _LibraryFolderPageState {
                           ),
                           const SizedBox(height: 16),
                           const _RemoteLibraryCard(),
-                          const SizedBox(height: 16),
-                          _CloudDrivesCard(
-                            selectedKey: _cloudDriveKey,
-                            rev: _cloudRev,
-                            onSelect: _toggleCloudDrive,
-                          ),
                         ],
                       ),
                     ),
-                    // 右列：本地已扫描目录树；点了左列网盘项时改为该盘
-                    // 已选文件夹面板（桌面端树形态），再点一次/收起还原
+                    // 右列：本地已扫描目录树
                     Expanded(
-                      child: _cloudDrive != null
-                          ? _CloudSelectedFoldersPane(
-                              key: ValueKey(
-                                '${_cloudDrive!.key.id}|${_cloudDrive!.value.accountId}',
-                              ),
-                              drive: _cloudDrive!,
-                              rev: _cloudRev,
-                              onClose: () => _toggleCloudDrive(null),
-                              onChanged: _onCloudFoldersChanged,
-                            )
-                          : RefreshIndicator(
+                      child: RefreshIndicator(
                               onRefresh: _onRefresh,
                               child: ListView(
                                 padding: const EdgeInsets.fromLTRB(

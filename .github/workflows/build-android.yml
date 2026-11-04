@@ -90,17 +90,18 @@ jobs:
       - name: Skip FRB codegen (bindings committed)
         run: touch lib/src/rust/frb_generated.dart
 
-      # Gradle 依赖与 wrapper 缓存。此前每个 job 都从 dl.google.com / Maven Central
-      # 重下一整套 AGP、AndroidX、Kotlin 依赖与 gradle 发行包（实测 3-5 分钟），
-      # 属于纯浪费——Rust 有 rust-cache、Flutter 有 action 自带 cache，唯独这里裸奔。
-      # key 跟随 gradle 配置与 pubspec.lock 变化；restore-keys 保证只改一个依赖时
-      # 仍能复用其余缓存（Gradle 自己会校验 hash，陈旧产物不会误用）。
+      # Gradle 依赖与发行包缓存。首次实测发现两件事，均已在此修正：
+      # 1) 原先把整份 ~/.gradle/caches 纳入缓存，Post 步骤打包时 tar 报
+      #    `failed with error: exit code 2`（守护进程仍在写 journal-1 /
+      #    fileHashes，文件被占用或瞬时消失），缓存从未真正落盘；改为只缓
+      #    modules-2（下载来的依赖 jar）与 wrapper/dists，构建后基本静止。
+      # 2) key 跟随 gradle 配置与 pubspec.lock；restore-keys 兜底部分命中。
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
           key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle.kts', 'android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle.properties', 'pubspec.lock') }}
           restore-keys: |
             gradle-${{ runner.os }}-
@@ -113,6 +114,17 @@ jobs:
           # 关闭 VFS 文件监视，规避 CI 上 "Already watching path" 导致的 daemon 崩溃
           GRADLE_OPTS: -Dorg.gradle.vfs.watch=false
         run: flutter build apk --release
+
+      # 守护进程在 job 末尾仍持有 ~/.gradle 下的 journal/fileHashes 写句柄，
+      # 会让 actions/cache 的 Post 打包 tar 失败（见上）。构建完成后主动停掉，
+      # 并清掉纯运行时状态，保证缓存目录静止。
+      - name: Stop Gradle daemon
+        if: always()
+        run: |
+          (cd android && ./gradlew --stop) || true
+          rm -rf ~/.gradle/caches/journal-1 || true
+          ls -la ~/.gradle/caches/modules-2 >/dev/null 2>&1 && \
+            du -sh ~/.gradle/caches/modules-2 ~/.gradle/wrapper/dists || true
 
       - name: Dump rust hook log (diagnostics)
         if: always()

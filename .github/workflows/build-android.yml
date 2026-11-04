@@ -57,11 +57,10 @@ jobs:
           yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
           # 新版 SDK 仓库按小版本拆分（37.0/37.1/37.2），无裸 android-37
           "$SDKMGR" "platforms;android-37.0" "platforms;android-37.1" "platforms;android-37.2"
-          # rust hook 取 $ANDROID_HOME/ndk 下最新版；预装为空时补装 r27
-          if [ -z "$(ls -A "$ANDROID_HOME/ndk" 2>/dev/null)" ]; then
-            "$SDKMGR" "ndk;27.0.12077973" || "$SDKMGR" "ndk;28.0.13004108"
-          fi
-          NDKV="$(ls -1 "$ANDROID_HOME/ndk" | sort -V | tail -1)"
+          # 锁定与 Flutter (AGP flutter.ndkVersion=r28c) 一致的 NDK，供 rust hook 使用；
+          # 不用 runner 预装的最新 NDK，避免 cargo-ndk 与过新 NDK 不兼容
+          "$SDKMGR" "ndk;28.2.13676358"
+          NDKV="28.2.13676358"
           echo "Using NDK $NDKV"
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
@@ -95,6 +94,16 @@ jobs:
 
       - name: Build APK
         run: flutter build apk --release
+
+      - name: Dump rust hook log (diagnostics)
+        if: always()
+        run: |
+          if [ -f build/rust-hook.log ]; then
+            echo '=== rust-hook.log tail ==='
+            tail -60 build/rust-hook.log
+          else
+            echo 'no rust-hook.log'
+          fi
 
       - name: Collect artifacts
         run: |

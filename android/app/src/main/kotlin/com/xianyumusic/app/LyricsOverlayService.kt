@@ -57,7 +57,7 @@ class LyricsOverlayService : Service() {
     private var unplayedColor = 0
     private var opacity = 1f
     private var fontScale = 1f
-    private var secondaryScale = 0.88f
+    private var secondaryScale = 1f
     private var showTranslation = true
     private var showRomanization = false
     private var showBackground = true
@@ -364,8 +364,8 @@ class LyricsOverlayService : Service() {
             textColor = o.optInt("textColor", Color.WHITE)
             unplayedColor = o.optInt("unplayedColor", 0)
             opacity = (o.optInt("opacity", 100) / 100f).coerceIn(0f, 1f)
-            fontScale = (o.optInt("fontScale", 100) / 100f).coerceIn(0.4f, 2.5f)
-            secondaryScale = (o.optInt("secondaryScale", 88) / 100f).coerceIn(0.4f, 2.5f)
+            fontScale = (o.optInt("fontScale", 100) / 100f).coerceIn(0.1f, 1.5f)
+            secondaryScale = (o.optInt("secondaryScale", 100) / 100f).coerceIn(0.1f, 1.5f)
             showTranslation = o.optBoolean("showTranslation", true)
             showRomanization = o.optBoolean("showRomanization", false)
             showBackground = o.optBoolean("showBackground", true)

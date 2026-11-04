@@ -1,0 +1,119 @@
+name: Android Build
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    tags: ["v*"]
+
+jobs:
+  build-android:
+    name: Flutter Android build (arm64 release APK)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47"
+          channel: stable
+          cache: true
+
+      - name: Install Android SDK components
+        run: |
+          set -x
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-37"
+          # 与 Flutter 自带 gradle 插件声明的 ndkVersion 对齐；取不到时回退 r27
+          FLUTTER_ROOT_DIR="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
+          NDKV="$(grep -RhoP 'ndkVersion\s*=\s*"\K[0-9.]+' "$FLUTTER_ROOT_DIR/packages/flutter_tools/gradle" 2>/dev/null | head -1)"
+          NDKV="${NDKV:-27.0.12077973}"
+          echo "Using NDK $NDKV"
+          sdkmanager "ndk;$NDKV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDKV" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDKV" >> "$GITHUB_ENV"
+
+      - name: Write key.properties
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          mkdir -p /tmp/ks
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > /tmp/ks/xianyu-release.jks
+          {
+            echo "storeFile=/tmp/ks/xianyu-release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > android/key.properties
+
+      # frb 生成的 Dart 绑定已随仓库提交且与 rust 源同版本；
+      # touch 让绑定成为最新文件，跳过 gradle-rust-hook 的 codegen 分支
+      # （避免 checkout mtime 乱序触发 flutter_rust_bridge_codegen）。
+      - name: Skip FRB codegen (bindings committed)
+        run: touch lib/src/rust/frb_generated.dart
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Collect artifacts
+        run: |
+          set -x
+          mkdir -p out
+          shopt -s nullglob
+          archived=(releases/android/*.apk)
+          if [ ${#archived[@]} -gt 0 ]; then
+            cp "${archived[0]}" out/
+          else
+            cp build/app/outputs/flutter-apk/app-release.apk out/
+          fi
+          VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)
+          cd out
+          for f in *.apk; do
+            mv "$f" "xianyu-music-mobile-v${VERSION}-arm64.apk"
+          done
+          sha256sum *.apk > SHA256SUMS.txt
+          ls -la
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-music-android
+          path: out/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

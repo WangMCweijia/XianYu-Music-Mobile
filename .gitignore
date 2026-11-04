@@ -124,3 +124,10 @@ third_party/*/ohos/build/
 
 # 百度 OAuth 密钥本地注入（含真实密钥，永不入 git）
 rust/.cargo/config.toml
+
+# 图标工作目录：只保留矢量源与生成脚本，忽略中间产物
+tool/icons/node_modules/
+tool/icons/package-lock.json
+tool/icons/sil/
+tool/icons/concepts/
+tool/icons/v2/*.png

@@ -27,25 +27,47 @@ class _StepperSliderRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     Widget stepButton(IconData icon, double delta) {
-      return PressableScale(
-        pressScale: 0.88,
-        child: IconButton(
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints.tightFor(width: 30, height: 30),
-          padding: EdgeInsets.zero,
-          iconSize: 16,
-          style: IconButton.styleFrom(
-            backgroundColor: enabled
-                ? scheme.surfaceContainerHighest
-                : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
-            foregroundColor: enabled
-                ? scheme.onSurfaceVariant
-                : scheme.onSurfaceVariant.withValues(alpha: 0.45),
+      Timer? holdTimer;
+      Timer? repeatTimer;
+      void fire() => onAdjust((readValue() + delta).clamp(min, max));
+      void stopRepeat() {
+        holdTimer?.cancel();
+        repeatTimer?.cancel();
+        holdTimer = null;
+        repeatTimer = null;
+      }
+
+      return Listener(
+        onPointerDown: (_) {
+          if (!enabled) return;
+          // 长按 350ms 后进入连发（约 14 步/秒），松手即停，实现无级微调
+          holdTimer = Timer(const Duration(milliseconds: 350), () {
+            repeatTimer = Timer.periodic(
+              const Duration(milliseconds: 70),
+              (_) => fire(),
+            );
+          });
+        },
+        onPointerUp: (_) => stopRepeat(),
+        onPointerCancel: (_) => stopRepeat(),
+        child: PressableScale(
+          pressScale: 0.88,
+          child: IconButton(
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            padding: EdgeInsets.zero,
+            iconSize: 16,
+            style: IconButton.styleFrom(
+              backgroundColor: enabled
+                  ? scheme.surfaceContainerHighest
+                  : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+              foregroundColor: enabled
+                  ? scheme.onSurfaceVariant
+                  : scheme.onSurfaceVariant.withValues(alpha: 0.45),
+            ),
+            icon: Icon(icon),
+            onPressed: enabled ? fire : null,
           ),
-          icon: Icon(icon),
-          onPressed: enabled
-              ? () => onAdjust((readValue() + delta).clamp(min, max))
-              : null,
         ),
       );
     }

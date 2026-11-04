@@ -55,7 +55,8 @@ jobs:
           done
           echo "sdkmanager: $SDKMGR"
           yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
-          "$SDKMGR" "platforms;android-37"
+          # 新版 SDK 仓库按小版本拆分（37.0/37.1/37.2），无裸 android-37
+          "$SDKMGR" "platforms;android-37.0" "platforms;android-37.1" "platforms;android-37.2"
           # rust hook 取 $ANDROID_HOME/ndk 下最新版；预装为空时补装 r27
           if [ -z "$(ls -A "$ANDROID_HOME/ndk" 2>/dev/null)" ]; then
             "$SDKMGR" "ndk;27.0.12077973" || "$SDKMGR" "ndk;28.0.13004108"

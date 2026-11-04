@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../src/core/app_colors.dart';
 import '../../src/i18n/i18n.dart';
+import '../../src/plugin/plugin_backup_import.dart';
 import '../../src/plugin/plugin_catalog.dart';
 import '../../src/plugin/plugin_engine.dart';
 import '../../src/plugin/plugin_models.dart';
@@ -28,10 +29,11 @@ class PluginTestPage extends ConsumerStatefulWidget {
   ConsumerState<PluginTestPage> createState() => _PluginTestPageState();
 }
 
-enum _TestStatus { pending, running, ok, fail, skip }
+enum _TestStatus { pending, running, ok, fail, skip, warn }
 
 /// 测试分组：结果按组渲染成表格，避免一长串平铺条目难以扫读。
-enum _TestGroup { init, capability, search, url }
+/// 「取链与播放」不在这里 —— 它按平台 × 音质渲染成矩阵。
+enum _TestGroup { init, capability, search }
 
 class _TestItem {
   _TestItem(
@@ -48,9 +50,55 @@ class _TestItem {
   int? ms;
 }
 
+/// 矩阵单元：某个平台在某个音质档位上的实测结果。
+///
+/// [declared] 为 false 表示该平台没声明这一档，格子画灰杠且不发请求 ——
+/// 这能把「平台不提供该档」和「提供了但取链失败」区分开，否则灰杠会被误读成故障。
+class _QCell {
+  _QCell({
+    required this.platformKey,
+    required this.quality,
+    required this.declared,
+    this.songTitle = '',
+  });
+
+  final String platformKey;
+  final String quality;
+  final bool declared;
+  final String songTitle;
+  _TestStatus status = _TestStatus.pending;
+  String? actualType;
+  String host = '';
+  int? httpStatus;
+  int? totalBytes;
+  int? ms;
+  String err = '';
+
+  /// 档位在 [PluginEngine.qualityLadder] 上的序号；未知档位返回 -1。
+  static int _rankOf(String? key) {
+    if (key == null || key.isEmpty) return -1;
+    final norm = PluginEngine.normalizeQualityKey(key) ?? key.toLowerCase();
+    return PluginEngine.qualityLadder.indexOf(norm);
+  }
+
+  /// 上游实际返回的档位低于请求档位 = 虚标/降级（请求 FLAC 给 320k）。
+  /// 返回更高档位不算问题，所以只判小于。
+  bool get downgraded {
+    final a = _rankOf(actualType);
+    final q = _rankOf(quality);
+    return a >= 0 && q >= 0 && a < q;
+  }
+}
+
 class _PluginTestPageState extends ConsumerState<PluginTestPage> {
   final TextEditingController _kwCtrl = TextEditingController(text: '周杰伦');
   final List<_TestItem> _items = [];
+
+  /// 平台 × 音质矩阵：行轴平台键、列轴音质档位、单元为实测结果。
+  final List<_QCell> _cells = [];
+  List<String> _platforms = const [];
+  List<String> _qualities = const [];
+  String _probeTitle = '';
   bool _running = false;
 
   @override
@@ -80,7 +128,7 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
     });
   }
 
-  Future<(int, String?)> _probeUrl(
+  Future<(int, int?, String?)> _probeUrl(
     String url,
     Map<String, String>? headers,
   ) async {
@@ -93,50 +141,87 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
         'User-Agent',
         'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36',
       );
-      // 仅取前 1KB：验证可播而不浪费流量
-      req.headers.set('Range', 'bytes=0-1023');
+      // 取前 64KB：既验证可播，也够拿 Content-Range 估码率；服务端忽略 Range
+      // 返回 200 全量时靠下面的 64KB 提前 break 断开，不会整包下载。
+      req.headers.set('Range', 'bytes=0-65535');
       headers?.forEach((k, v) {
         if (k.toLowerCase() != 'range') req.headers.set(k, v);
       });
       final resp = await req.close().timeout(const Duration(seconds: 8));
-      await resp.drain<void>().timeout(const Duration(seconds: 8));
-      return (resp.statusCode, null);
+      final total = _totalBytesOf(resp);
+      var read = 0;
+      await for (final chunk in resp.timeout(const Duration(seconds: 8))) {
+        read += chunk.length;
+        if (read >= 65536) break;
+      }
+      return (resp.statusCode, total, null);
     } catch (e) {
-      return (0, e.toString());
+      return (0, null, e.toString());
     } finally {
       client.close(force: true);
     }
   }
 
-  List<String> _qualitiesFor(PluginSource source, Map<String, dynamic>? meta) {
+  /// 文件总字节数：优先 Content-Range 的 `/total`，退化到 Content-Length。
+  int? _totalBytesOf(HttpClientResponse resp) {
+    final cr = resp.headers.value('content-range');
+    if (cr != null) {
+      final m = RegExp(r'/(\d+)\s*$').firstMatch(cr);
+      final n = m == null ? null : int.tryParse(m.group(1)!);
+      if (n != null) return n;
+    }
+    final cl = resp.headers.value('content-length');
+    return cl == null ? null : int.tryParse(cl);
+  }
+
+  static const List<String> _fallbackQualities = ['128k', '320k', 'flac'];
+
+  /// 某个平台自己声明的音质档位（**不与其他平台取并集**）。
+  ///
+  /// 旧实现把所有平台声明的档位合并后，拿同一首（只属于命中平台）的 songInfo
+  /// 逐档取链，等于拿咪咕的曲目信息去问 FLAC —— 必然失败且结果无法归属平台。
+  List<String> _declaredQualitiesFor(
+    PluginSource source,
+    Map<String, dynamic>? meta,
+    String platformKey,
+  ) {
     final declared = <String>[];
-    if (source.format == PluginFormat.lx) {
-      final raw = meta?['sources'];
-      if (raw is Map) {
-        for (final v in raw.values) {
-          if (v is Map) {
-            for (final q in (v['qualitys'] as List?) ?? const []) {
-              final n = PluginEngine.normalizeQualityKey(q);
-              if (n != null && !declared.contains(n)) declared.add(n);
-            }
-          }
-        }
-      }
-    } else {
-      final raw = meta?['supportedQualities'];
-      if (raw is List) {
-        for (final q in raw) {
-          final n = PluginEngine.normalizeQualityKey(q);
-          if (n != null && !declared.contains(n)) declared.add(n);
-        }
+    void take(Object? raw) {
+      if (raw is! List) return;
+      for (final q in raw) {
+        final n = PluginEngine.normalizeQualityKey(q);
+        if (n != null && !declared.contains(n)) declared.add(n);
       }
     }
-    if (declared.isEmpty) return const ['128k', '320k', 'flac'];
+
+    if (source.format == PluginFormat.lx) {
+      final raw = meta?['sources'];
+      final entry = raw is Map ? raw[platformKey] : null;
+      if (entry is Map) take(entry['qualitys']);
+    } else {
+      take(meta?['supportedQualities']);
+    }
+    if (declared.isEmpty) return _fallbackQualities;
+
     final ladder = PluginEngine.qualityLadder;
-    declared.sort(
-      (a, b) => ladder.indexOf(a).compareTo(ladder.indexOf(b)),
-    );
+    declared.sort((a, b) => ladder.indexOf(a).compareTo(ladder.indexOf(b)));
     return declared;
+  }
+
+  /// 平台轴：LX 取元数据里声明的 sources 键（kw/kg/tx/wy/mg），MF 为单平台。
+  List<String> _platformsOf(PluginSource source, Map<String, dynamic>? meta) {
+    if (source.format != PluginFormat.lx) return const ['-'];
+    final raw = meta?['sources'];
+    if (raw is Map && raw.isNotEmpty) {
+      return raw.keys.map((e) => e.toString()).toList();
+    }
+    return source.sources.isEmpty ? const ['default'] : source.sources;
+  }
+
+  String _platformName(String key) {
+    if (key == '-') return tr('单平台');
+    final found = lxPlatformDisplayName(key);
+    return found.isNotEmpty ? found : key.toUpperCase();
   }
 
   Future<void> _run() async {
@@ -146,6 +231,10 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
     setState(() {
       _running = true;
       _items.clear();
+      _cells.clear();
+      _platforms = const [];
+      _qualities = const [];
+      _probeTitle = '';
     });
 
     final source = ref
@@ -225,16 +314,13 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
       _finish(_items.length - 1, _TestStatus.skip, _items.last.detail, null);
     }
 
-    // ---- 3. 搜索 ----
-    final keys = source.format == PluginFormat.lx
-        ? (source.sources.isEmpty ? <String>['default'] : source.sources)
-        : <String>['-'];
-    PluginSearchResult? firstHit;
-    String? firstKey;
-    for (final key in keys) {
+    // ---- 3. 搜索（逐平台各搜一次：矩阵必须用各平台自己的曲目信息） ----
+    final platforms = _platformsOf(source, meta);
+    final firstByKey = <String, PluginSearchResult>{};
+    for (final key in platforms) {
       _add(
         source.format == PluginFormat.lx
-            ? tr('搜索 {key}', {'key': key})
+            ? tr('搜索 {key}', {'key': _platformName(key)})
             : tr('搜索'),
         _TestGroup.search,
       );
@@ -254,89 +340,158 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
           tr('{n} 条结果', {'n': hits.length}),
           sw2.elapsedMilliseconds,
         );
-        if (firstHit == null && hits.isNotEmpty) {
-          firstHit = hits.first;
-          firstKey = key;
-        }
+        if (hits.isNotEmpty) firstByKey[key] = hits.first;
       } catch (e) {
         _finish(idx, _TestStatus.fail, e.toString(), sw2.elapsedMilliseconds);
       }
     }
 
-    // ---- 4. 逐档取链 + HTTP 实测 ----
-    if (firstHit == null) {
-      _add(tr('取链'), _TestGroup.url, detail: tr('无搜索结果，跳过'));
-      _finish(_items.length - 1, _TestStatus.skip, tr('无搜索结果，跳过'), null);
+    // ---- 4. 平台 × 音质矩阵：每平台只测它自己声明的档位 ----
+    final qualitiesByPlatform = <String, List<String>>{
+      for (final p in platforms) p: _declaredQualitiesFor(source, meta, p),
+    };
+    final columnSet = <String>{
+      for (final qs in qualitiesByPlatform.values) ...qs,
+    };
+    final ladder = PluginEngine.qualityLadder;
+    final columns = columnSet.toList()
+      ..sort((a, b) => ladder.indexOf(a).compareTo(ladder.indexOf(b)));
+
+    _platforms = platforms;
+    _qualities = columns;
+    _cells
+      ..clear()
+      ..addAll([
+        for (final p in platforms)
+          for (final q in columns)
+            _QCell(
+              platformKey: p,
+              quality: q,
+              declared: (qualitiesByPlatform[p] ?? const <String>[]).contains(
+                q,
+              ),
+              songTitle: firstByKey[p] == null
+                  ? ''
+                  : '${firstByKey[p]!.name} - ${firstByKey[p]!.singer}',
+            ),
+      ]);
+    _probeTitle = firstByKey.isEmpty
+        ? ''
+        : '${firstByKey.values.first.name} - ${firstByKey.values.first.singer}';
+    setState(() {});
+
+    final todo = _cells.where((c) => c.declared).toList();
+    if (todo.isEmpty) {
       setState(() => _running = false);
       return;
     }
 
-    final qualities = _qualitiesFor(source, meta);
-    final rawMap = firstHit.rawData;
-    final songInfo = rawMap is Map<String, dynamic>
-        ? Map<String, dynamic>.from(rawMap)
-        : firstHit.toJson();
-    final probeTitle = '${firstHit.name} - ${firstHit.singer}';
-
-    for (final q in qualities) {
-      _add(tr('取链 {q}', {'q': q}), _TestGroup.url, detail: probeTitle);
-      final idx = _items.length - 1;
-      final sw3 = Stopwatch()..start();
-      try {
-        String? url;
-        Map<String, String>? headers;
-        if (source.format.isMfCompatible) {
-          final r = await engine
-              .getMusicFreeUrl(
-                source,
-                Map<String, dynamic>.from(firstHit.toJson()),
-                preferred: q,
-                fallback: 'pause',
-              )
-              .timeout(const Duration(seconds: 30));
-          url = r?.url;
-          headers = r?.headers;
-        } else {
-          final r = await engine
-              .getMusicUrl(
-                source,
-                (firstHit.source.isNotEmpty ? firstHit.source : firstKey) ??
-                    'default',
-                songInfo,
-                q,
-              )
-              .timeout(const Duration(seconds: 30));
-          url = r?['url'] as String?;
-          final h = r?['headers'];
-          if (h is Map) headers = h.cast<String, String>();
-        }
-        if (url == null || url.isEmpty) {
-          _finish(idx, _TestStatus.fail, tr('未返回直链'), sw3.elapsedMilliseconds);
-          continue;
-        }
-        final (status, err) = await _probeUrl(url, headers);
-        final host = Uri.tryParse(url)?.host ?? '';
-        if (status == 200 || status == 206) {
-          _finish(
-            idx,
-            _TestStatus.ok,
-            '$host · HTTP $status',
-            sw3.elapsedMilliseconds,
-          );
-        } else {
-          _finish(
-            idx,
-            _TestStatus.fail,
-            status == 0 ? (err ?? tr('连通失败')) : '$host · HTTP $status',
-            sw3.elapsedMilliseconds,
-          );
-        }
-      } catch (e) {
-        _finish(idx, _TestStatus.fail, e.toString(), sw3.elapsedMilliseconds);
+    // 并发 3：全串行要等一分多钟，全并发容易被上游判高频、整片飘红
+    var cursor = 0;
+    Future<void> worker() async {
+      while (cursor < todo.length) {
+        final cell = todo[cursor++];
+        if (!mounted) return;
+        await _testCell(cell, source, engine, firstByKey);
+        await Future<void>.delayed(const Duration(milliseconds: 200));
       }
     }
 
+    await Future.wait([
+      for (var i = 0; i < math.min(3, todo.length); i++) worker(),
+    ]);
+
+    if (!mounted) return;
     setState(() => _running = false);
+  }
+
+  /// 单个矩阵单元：取链 → HTTP 实测 → 记录实际类型与文件大小。
+  Future<void> _testCell(
+    _QCell cell,
+    PluginSource source,
+    PluginEngine engine,
+    Map<String, PluginSearchResult> firstByKey,
+  ) async {
+    setState(() => cell.status = _TestStatus.running);
+    final hit = firstByKey[cell.platformKey];
+    if (hit == null) {
+      setState(() {
+        cell.status = _TestStatus.fail;
+        cell.err = tr('该平台无搜索结果');
+      });
+      return;
+    }
+
+    final sw = Stopwatch()..start();
+    try {
+      String? url;
+      Map<String, String>? headers;
+      String? actualType;
+      if (source.format.isMfCompatible) {
+        final r = await engine
+            .getMusicFreeUrl(
+              source,
+              Map<String, dynamic>.from(hit.toJson()),
+              preferred: cell.quality,
+              fallback: 'pause',
+            )
+            .timeout(const Duration(seconds: 30));
+        url = r?.url;
+        headers = r?.headers;
+        actualType = r?.quality;
+      } else {
+        final raw = hit.rawData;
+        final songInfo = raw is Map<String, dynamic>
+            ? Map<String, dynamic>.from(raw)
+            : hit.toJson();
+        final r = await engine
+            .getMusicUrl(
+              source,
+              hit.source.isNotEmpty ? hit.source : cell.platformKey,
+              songInfo,
+              cell.quality,
+            )
+            .timeout(const Duration(seconds: 30));
+        url = r?['url'] as String?;
+        actualType = r?['type']?.toString();
+        final h = r?['headers'];
+        if (h is Map) headers = h.cast<String, String>();
+      }
+
+      if (url == null || url.isEmpty) {
+        setState(() {
+          cell.status = _TestStatus.fail;
+          cell.ms = sw.elapsedMilliseconds;
+          cell.err = tr('未返回直链');
+        });
+        return;
+      }
+
+      final host = Uri.tryParse(url)?.host ?? '';
+      final (status, total, err) = await _probeUrl(url, headers);
+      if (!mounted) return;
+      setState(() {
+        cell.ms = sw.elapsedMilliseconds;
+        cell.host = host;
+        cell.httpStatus = status;
+        cell.totalBytes = total;
+        cell.actualType = actualType;
+        if (status == 200 || status == 206) {
+          cell.status = cell.downgraded ? _TestStatus.warn : _TestStatus.ok;
+          cell.err = '';
+        } else {
+          cell.status = _TestStatus.fail;
+          cell.err = status == 0 ? (err ?? tr('连通失败')) : 'HTTP $status';
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        cell.status = _TestStatus.fail;
+        cell.ms = sw.elapsedMilliseconds;
+        cell.err = e.toString();
+      });
+    }
   }
 
   @override
@@ -438,6 +593,10 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
           if (_items.isNotEmpty) ...[
             _summaryCard(scheme),
             const SizedBox(height: 10),
+            if (_cells.isNotEmpty) ...[
+              _qualityMatrix(scheme),
+              const SizedBox(height: 10),
+            ],
             for (final g in _TestGroup.values)
               if (_items.any((it) => it.group == g)) ...[
                 _groupTable(
@@ -453,12 +612,21 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
     );
   }
 
-  // ---------------- 结果展示：汇总环 + 分组表格 ----------------
+  // ---------------- 结果展示：汇总环 + 平台×音质矩阵 + 分组表格 ----------------
 
-  int get _ok => _items.where((it) => it.status == _TestStatus.ok).length;
-  int get _fail => _items.where((it) => it.status == _TestStatus.fail).length;
-  int get _skip => _items.where((it) => it.status == _TestStatus.skip).length;
-  int get _sumMs => _items.fold(0, (a, it) => a + (it.ms ?? 0));
+  int get _ok =>
+      _items.where((it) => it.status == _TestStatus.ok).length +
+      _cells.where((c) => c.status == _TestStatus.ok).length;
+  int get _fail =>
+      _items.where((it) => it.status == _TestStatus.fail).length +
+      _cells.where((c) => c.status == _TestStatus.fail).length;
+  int get _warn => _cells.where((c) => c.status == _TestStatus.warn).length;
+  int get _skip =>
+      _items.where((it) => it.status == _TestStatus.skip).length +
+      _cells.where((c) => c.declared && c.status == _TestStatus.skip).length;
+  int get _sumMs => _items.fold<int>(0, (a, it) => a + (it.ms ?? 0)) +
+      _cells.fold<int>(0, (a, c) => a + (c.ms ?? 0));
+  int get _declaredCells => _cells.where((c) => c.declared).length;
 
   String _fmtMs(int ms) => ms < 1000
       ? '${ms}ms'
@@ -468,14 +636,12 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
     _TestGroup.init => tr('初始化'),
     _TestGroup.capability => tr('声明能力'),
     _TestGroup.search => tr('搜索'),
-    _TestGroup.url => tr('取链与播放'),
   };
 
   IconData _groupIcon(_TestGroup g) => switch (g) {
     _TestGroup.init => Icons.power_settings_new,
     _TestGroup.capability => Icons.tune,
     _TestGroup.search => Icons.search,
-    _TestGroup.url => Icons.link,
   };
 
   (IconData, Color, String) _statusOf(_TestItem it, ColorScheme scheme) =>
@@ -488,6 +654,11 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
           tr('跳过'),
         ),
         _TestStatus.running => (Icons.timelapse, scheme.primary, tr('测试中')),
+        _TestStatus.warn => (
+          Icons.error_outline,
+          const Color(0xFFEF8C00),
+          tr('类型不符'),
+        ),
         _TestStatus.pending => (
           Icons.radio_button_unchecked,
           scheme.outline,
@@ -497,8 +668,8 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
 
   /// 顶部汇总卡：左侧通过率环形图，右侧通过/失败/跳过计数与耗时。
   Widget _summaryCard(ColorScheme scheme) {
-    final total = _ok + _fail;
-    final rate = total == 0 ? 0.0 : _ok / total;
+    final total = _ok + _fail + _warn;
+    final rate = total == 0 ? 0.0 : (_ok + _warn) / total;
     final pass = total > 0 && _ok == total;
     final ringColor = total == 0
         ? scheme.outline
@@ -586,6 +757,16 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
                       color: appSecondaryFg(scheme),
                     ),
                   ),
+                  if (_warn > 0 && !_running) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      tr('{n} 档实际返回低于请求（疑似虚标）', {'n': _warn}),
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        color: Color(0xFFEF8C00),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -617,6 +798,339 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
         ],
       ),
     );
+  }
+
+  // ---------------- 平台 × 音质矩阵 ----------------
+
+  static const double _platformColW = 76;
+  static const double _cellW = 42;
+  static const double _headH = 24;
+  static const double _rowH = 34;
+
+  static const Color _cOk = Color(0xFF2E7D32);
+  static const Color _cWarn = Color(0xFFEF8C00);
+
+  /// 行=平台、列=音质档位。左列固定不滚动，只有档位列横向滚动，
+  /// 这样平台名始终可见（超过 5 档时才需要横滑）。
+  Widget _qualityMatrix(ColorScheme scheme) {
+    final index = <String, _QCell>{
+      for (final c in _cells) '${c.platformKey}\u0000${c.quality}': c,
+    };
+    final usable = _cells
+        .where((c) => c.status == _TestStatus.ok || c.status == _TestStatus.warn)
+        .length;
+
+    return Card(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.3),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 11, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.grid_on, size: 15, color: scheme.primary),
+                const SizedBox(width: 6),
+                Text(
+                  tr('平台 × 音质'),
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  tr('可用 {n}/{m}', {'n': usable, 'm': _declaredCells}),
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: appSecondaryFg(scheme),
+                  ),
+                ),
+              ],
+            ),
+            if (_probeTitle.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(
+                  tr('测试曲目：{t}', {'t': _probeTitle}),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: appSecondaryFg(scheme),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 9),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: _platformColW,
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        height: _headH,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            tr('平台'),
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              color: appSecondaryFg(scheme),
+                            ),
+                          ),
+                        ),
+                      ),
+                      for (final p in _platforms)
+                        SizedBox(
+                          height: _rowH,
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              _platformName(p),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Column(
+                      children: [
+                        SizedBox(
+                          height: _headH,
+                          child: Row(
+                            children: [
+                              for (final q in _qualities)
+                                SizedBox(
+                                  width: _cellW,
+                                  child: Center(
+                                    child: Text(
+                                      q,
+                                      style: TextStyle(
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: appSecondaryFg(scheme),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        for (final p in _platforms)
+                          SizedBox(
+                            height: _rowH,
+                            child: Row(
+                              children: [
+                                for (final q in _qualities)
+                                  SizedBox(
+                                    width: _cellW,
+                                    child: Center(
+                                      child: _cellBox(
+                                        scheme,
+                                        index['$p\u0000$q'],
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 12,
+              runSpacing: 4,
+              children: [
+                _legendDot(scheme, _cOk, tr('可用')),
+                _legendDot(scheme, scheme.error, tr('失败')),
+                _legendDot(scheme, _cWarn, tr('类型不符')),
+                _legendDot(scheme, scheme.outline, tr('未声明')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _legendDot(ColorScheme scheme, Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: TextStyle(fontSize: 10.5, color: appSecondaryFg(scheme)),
+        ),
+      ],
+    );
+  }
+
+  Widget _cellBox(ColorScheme scheme, _QCell? c) {
+    if (c == null) return const SizedBox.shrink();
+    if (!c.declared) {
+      return Container(
+        width: 30,
+        height: 22,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: scheme.onSurface.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(
+          '—',
+          style: TextStyle(fontSize: 11, color: scheme.outline),
+        ),
+      );
+    }
+
+    final (color, glyph) = switch (c.status) {
+      _TestStatus.ok => (_cOk, '✓'),
+      _TestStatus.warn => (_cWarn, '!'),
+      _TestStatus.fail => (scheme.error, '✗'),
+      _TestStatus.running => (scheme.primary, ''),
+      _TestStatus.skip => (scheme.outline, '–'),
+      _TestStatus.pending => (scheme.outline, '·'),
+    };
+
+    return InkWell(
+      onTap: c.status == _TestStatus.pending || c.status == _TestStatus.running
+          ? null
+          : () => _showCellDetail(c),
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        width: 30,
+        height: 22,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: c.status == _TestStatus.running
+            ? SizedBox(
+                width: 11,
+                height: 11,
+                child: CircularProgressIndicator(strokeWidth: 1.6, color: color),
+              )
+            : Text(
+                glyph,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                  height: 1,
+                ),
+              ),
+      ),
+    );
+  }
+
+  void _showCellDetail(_QCell c) {
+    final (_, color, label) = switch (c.status) {
+      _TestStatus.ok => (Icons.check_circle, _cOk, tr('通过')),
+      _TestStatus.warn => (Icons.error_outline, _cWarn, tr('类型不符')),
+      _TestStatus.fail => (Icons.cancel, Theme.of(context).colorScheme.error, tr('失败')),
+      _ => (Icons.info, Theme.of(context).colorScheme.outline, tr('跳过')),
+    };
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          '${_platformName(c.platformKey)} · ${c.quality}',
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _kvRow(ctx, tr('状态'), label, color),
+            if (c.songTitle.isNotEmpty) _kvRow(ctx, tr('测试曲目'), c.songTitle),
+            if (c.actualType != null && c.actualType!.isNotEmpty)
+              _kvRow(
+                ctx,
+                tr('实际类型'),
+                c.downgraded ? '${c.actualType} （低于请求）' : c.actualType!,
+                c.downgraded ? _cWarn : null,
+              ),
+            if (c.host.isNotEmpty) _kvRow(ctx, tr('主机'), c.host),
+            if (c.httpStatus != null) _kvRow(ctx, 'HTTP', '${c.httpStatus}'),
+            if (c.totalBytes != null)
+              _kvRow(ctx, tr('文件大小'), _fmtBytes(c.totalBytes!)),
+            if (c.ms != null) _kvRow(ctx, tr('耗时'), _fmtMs(c.ms!)),
+            if (c.err.isNotEmpty) _kvRow(ctx, tr('错误'), c.err),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(tr('关闭')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _kvRow(
+    BuildContext ctx,
+    String k,
+    String v, [
+    Color? color,
+  ]) {
+    final scheme = Theme.of(ctx).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 62,
+            child: Text(
+              k,
+              style: TextStyle(fontSize: 12, color: appSecondaryFg(scheme)),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              v,
+              style: TextStyle(fontSize: 12, color: color ?? scheme.onSurface),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _fmtBytes(int n) {
+    if (n >= 1 << 30) return '${(n / (1 << 30)).toStringAsFixed(2)} GB';
+    if (n >= 1 << 20) return '${(n / (1 << 20)).toStringAsFixed(1)} MB';
+    return '${(n / 1024).toStringAsFixed(0)} KB';
   }
 
   /// 单个分组的表格：组头 + 表头 + 数据行（项目 / 结果 / 耗时条形）。

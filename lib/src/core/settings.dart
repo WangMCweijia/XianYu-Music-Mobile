@@ -314,7 +314,7 @@ class AppSettings {
     this.floatingLyricsUnplayedColor = 0,
     this.floatingLyricsOpacity = 100,
     this.floatingLyricsFontScale = 100,
-    this.floatingLyricsSecondaryScale = 88,
+    this.floatingLyricsSecondaryScale = 100,
     this.floatingLyricsShowTranslation = true,
     this.floatingLyricsShowNextLine = false,
     this.floatingLyricsShowRomanization = false,
@@ -907,6 +907,24 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
     final liquidGlass = prefs.getBool('liquidGlass') ?? false;
     final frostedGlass = prefs.getBool('frostedGlass') ?? false;
 
+    // 桌面歌词字号缩放 v2 迁移：旧值域 80-220（旧80% 的字号定为新100%），
+    // 等比 ×1.25 映射到新值域 10-150；未写入过（新装）直接用新默认 100。
+    final scaleV2Done = prefs.getBool('floatingLyricsScaleV2') ?? false;
+    int migrateScale(String key) {
+      final raw = prefs.getInt(key);
+      if (raw == null) return 100;
+      if (scaleV2Done) return raw.clamp(10, 150);
+      return (raw * 1.25).round().clamp(10, 150);
+    }
+
+    final flsFontScale = migrateScale('floatingLyricsFontScale');
+    final flsSecondaryScale = migrateScale('floatingLyricsSecondaryScale');
+    if (!scaleV2Done) {
+      await prefs.setInt('floatingLyricsFontScale', flsFontScale);
+      await prefs.setInt('floatingLyricsSecondaryScale', flsSecondaryScale);
+      await prefs.setBool('floatingLyricsScaleV2', true);
+    }
+
     return AppSettings(
       volume: prefs.getDouble('volume') ?? 1.0,
       playMode: prefs.getInt('playMode') ?? 0,
@@ -1045,9 +1063,8 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       floatingLyricsUnplayedColor:
           prefs.getInt('floatingLyricsUnplayedColor') ?? 0,
       floatingLyricsOpacity: prefs.getInt('floatingLyricsOpacity') ?? 100,
-      floatingLyricsFontScale: prefs.getInt('floatingLyricsFontScale') ?? 100,
-      floatingLyricsSecondaryScale:
-          prefs.getInt('floatingLyricsSecondaryScale') ?? 88,
+      floatingLyricsFontScale: flsFontScale,
+      floatingLyricsSecondaryScale: flsSecondaryScale,
       floatingLyricsShowTranslation:
           prefs.getBool('floatingLyricsShowTranslation') ?? true,
       floatingLyricsShowNextLine:

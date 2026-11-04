@@ -50,7 +50,7 @@ class LyricsOverlayView(context: Context) : View(context) {
     private var unplayedColor = 0
     private var opacity = 1f
     private var fontScale = 1f
-    private var secondaryScale = 0.88f
+    private var secondaryScale = 1f
     private var showNextLine = false
     private var showTranslation = true
     private var showRomanization = false
@@ -145,8 +145,8 @@ class LyricsOverlayView(context: Context) : View(context) {
     }
 
     private fun drawLyricLine(canvas: Canvas, line: LyricLineData, positionMs: Long) {
-        val mainSize = sp(25f) * fontScale
-        val secondarySize = sp(15f) * secondaryScale
+        val mainSize = sp(20f) * fontScale
+        val secondarySize = sp(12f) * secondaryScale
         val maxWidth = width - dp(20)
         val originalText = line.text.ifBlank { "\u266a" }
         // 下一句提前显示。必须在 val lines 声明前取好：那个局部变量会遮蔽同名的类字段。
@@ -210,7 +210,7 @@ class LyricsOverlayView(context: Context) : View(context) {
     }
 
     private fun drawCenteredLine(canvas: Canvas, text: String, centerY: Float) {
-        basePaint.textSize = sp(22f) * fontScale
+        basePaint.textSize = sp(17.6f) * fontScale
         basePaint.color = withAlpha(textColor, opacity)
         val x = (width - basePaint.measureText(text)) / 2f
         canvas.drawText(

@@ -71,8 +71,9 @@ fi
 export ANDROID_HOME="${ANDROID_HOME:-}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 
-# NDK：取 SDK 下 ndk/ 目录中版本号最新的一个
-if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/ndk" ]; then
+# NDK：优先沿用外部已指定的 ANDROID_NDK_HOME（如 CI 锁定与 Flutter 一致的版本）；
+# 未指定时才取 SDK 下 ndk/ 目录中版本号最新的一个
+if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/ndk" ]; then
   ndkVer="$(ls -1 "$ANDROID_HOME/ndk" 2>/dev/null | sort -V | tail -n1)"
   if [ -n "$ndkVer" ]; then
     export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ndkVer"

@@ -43,17 +43,23 @@ jobs:
           channel: stable
           cache: true
 
+      # runner 自带 SDK 但 sdkmanager 不在 PATH；此动作补齐 cmdline-tools 与 PATH
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install Android SDK components
         run: |
           set -x
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager "platforms;android-37"
-          # 与 Flutter 自带 gradle 插件声明的 ndkVersion 对齐；取不到时回退 r27
-          FLUTTER_ROOT_DIR="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
-          NDKV="$(grep -RhoP 'ndkVersion\s*=\s*"\K[0-9.]+' "$FLUTTER_ROOT_DIR/packages/flutter_tools/gradle" 2>/dev/null | head -1)"
-          NDKV="${NDKV:-27.0.12077973}"
+          # rust hook 取 $ANDROID_HOME/ndk 下最新版；预装为空时补装 r27
+          if [ -z "$(ls -A "$ANDROID_HOME/ndk" 2>/dev/null)" ]; then
+            sdkmanager "ndk;27.0.12077973" || sdkmanager "ndk;28.0.13004108"
+          fi
+          NDKV="$(ls -1 "$ANDROID_HOME/ndk" | sort -V | tail -1)"
           echo "Using NDK $NDKV"
-          sdkmanager "ndk;$NDKV"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDKV" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDKV" >> "$GITHUB_ENV"
 

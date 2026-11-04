@@ -190,17 +190,3 @@ String lxSourceKeyForPlatform(String platformLabel) {
   return desc.lxSource ?? '';
 }
 
-/// LX 平台键（kw/kg/tx/wy/mg）反查中文展示名，供音源测试按平台分组用。
-///
-/// 未知键返回空串，由调用方兜底成原始键，避免新增一份平台映射表。
-String lxPlatformDisplayName(String lxSource) {
-  final key = lxSource.trim().toLowerCase();
-  if (key.isEmpty) return '';
-  for (final alias in _platformAliases) {
-    if ((alias['lxSource'] as String?) == key) {
-      return (alias['displayName'] as String?) ?? '';
-    }
-  }
-  return '';
-}
-

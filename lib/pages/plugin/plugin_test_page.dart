@@ -8,7 +8,6 @@ import 'package:go_router/go_router.dart';
 
 import '../../src/core/app_colors.dart';
 import '../../src/i18n/i18n.dart';
-import '../../src/plugin/plugin_backup_import.dart';
 import '../../src/plugin/plugin_catalog.dart';
 import '../../src/plugin/plugin_engine.dart';
 import '../../src/plugin/plugin_models.dart';
@@ -218,10 +217,12 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
     return source.sources.isEmpty ? const ['default'] : source.sources;
   }
 
+  /// 平台显示名：复用榜单页/搜索页那套 LX 昵称映射（小蜗/小枸…），
+  /// 未知键回退成大写原始键，保证表格永远有标签可读。
   String _platformName(String key) {
     if (key == '-') return tr('单平台');
-    final found = lxPlatformDisplayName(key);
-    return found.isNotEmpty ? found : key.toUpperCase();
+    final name = lxPlatformDisplayName(key);
+    return name == key ? key.toUpperCase() : name;
   }
 
   Future<void> _run() async {

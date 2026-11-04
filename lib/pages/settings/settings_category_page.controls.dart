@@ -333,12 +333,12 @@ extension _SettingsCategoryPageControls on _SettingsCategoryPageState {
       enabled: enabled,
       readValue: () => (s?.floatingLyricsFontScale ?? 100).toDouble(),
       step: 5,
-      min: 80,
-      max: 220,
+      min: 10,
+      max: 150,
       format: (x) => '${x.round()}%',
       slider: CommittedSlider(
-        min: 80,
-        max: 220,
+        min: 10,
+        max: 150,
         divisions: 28,
         value: v,
         enabled: enabled,
@@ -375,18 +375,18 @@ extension _SettingsCategoryPageControls on _SettingsCategoryPageState {
 
   Widget _floatingLyricsSecondarySlider(AppSettings? s, SettingsNotifier n) {
     final enabled = s?.floatingLyricsEnabled ?? false;
-    final v = (s?.floatingLyricsSecondaryScale ?? 88).toDouble();
+    final v = (s?.floatingLyricsSecondaryScale ?? 100).toDouble();
     return _StepperSliderRow(
       enabled: enabled,
-      readValue: () => (s?.floatingLyricsSecondaryScale ?? 88).toDouble(),
+      readValue: () => (s?.floatingLyricsSecondaryScale ?? 100).toDouble(),
       step: 5,
-      min: 70,
-      max: 180,
+      min: 10,
+      max: 150,
       format: (x) => '${x.round()}%',
       slider: CommittedSlider(
-        min: 70,
-        max: 180,
-        divisions: 22,
+        min: 10,
+        max: 150,
+        divisions: 28,
         value: v,
         enabled: enabled,
         onCommit: (x) => n.setFloatingLyricsSecondaryScale(x.round()),
@@ -476,14 +476,14 @@ extension _SettingsCategoryPageControls on _SettingsCategoryPageState {
     return _StepperSliderRow(
       enabled: enabled,
       readValue: () => norm((s?.floatingLyricsY ?? 96).toDouble()),
-      step: 5,
+      step: 1,
       min: 0,
       max: 100,
       format: (x) => '${x.round()}',
       slider: CommittedSlider(
         min: 0,
         max: 100,
-        divisions: 40,
+        divisions: null,
         value: v,
         enabled: enabled,
         onCommit: (val) {

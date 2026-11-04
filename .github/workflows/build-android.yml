@@ -13,6 +13,7 @@ jobs:
   build-android:
     name: Flutter Android build (arm64 release APK)
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,6 +94,9 @@ jobs:
         run: flutter pub get
 
       - name: Build APK
+        env:
+          # 关闭 VFS 文件监视，规避 CI 上 "Already watching path" 导致的 daemon 崩溃
+          GRADLE_OPTS: -Dorg.gradle.vfs.watch=false
         run: flutter build apk --release
 
       - name: Dump rust hook log (diagnostics)

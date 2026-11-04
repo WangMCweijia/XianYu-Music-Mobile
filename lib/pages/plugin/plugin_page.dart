@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../../src/widgets/flat_top_bar.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../src/core/app_colors.dart';
 import '../../src/core/application_logger.dart';

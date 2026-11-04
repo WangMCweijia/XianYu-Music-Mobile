@@ -90,6 +90,21 @@ jobs:
       - name: Skip FRB codegen (bindings committed)
         run: touch lib/src/rust/frb_generated.dart
 
+      # Gradle 依赖与 wrapper 缓存。此前每个 job 都从 dl.google.com / Maven Central
+      # 重下一整套 AGP、AndroidX、Kotlin 依赖与 gradle 发行包（实测 3-5 分钟），
+      # 属于纯浪费——Rust 有 rust-cache、Flutter 有 action 自带 cache，唯独这里裸奔。
+      # key 跟随 gradle 配置与 pubspec.lock 变化；restore-keys 保证只改一个依赖时
+      # 仍能复用其余缓存（Gradle 自己会校验 hash，陈旧产物不会误用）。
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle.kts', 'android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle.properties', 'pubspec.lock') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
       - name: Install dependencies
         run: flutter pub get
 

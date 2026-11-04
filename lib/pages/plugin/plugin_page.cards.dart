@@ -668,6 +668,13 @@ class _PluginCard extends ConsumerWidget {
         const SizedBox(width: 4),
         _action(
           context,
+          Icons.science_outlined,
+          tr('测试'),
+          () => _openTest(context),
+        ),
+        const SizedBox(width: 4),
+        _action(
+          context,
           Icons.system_update_alt_outlined,
           tr('更新'),
           () => onUpdate(context),
@@ -752,6 +759,10 @@ class _PluginCard extends ConsumerWidget {
       context,
       (ctx) => _PluginDetailSheet(source: source),
     );
+  }
+
+  void _openTest(BuildContext context) {
+    context.push('/plugin-test/${source.id}');
   }
 
   void _confirmRemove(

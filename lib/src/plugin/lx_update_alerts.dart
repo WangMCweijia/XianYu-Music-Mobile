@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/application_logger.dart';
-import '../auth/account_api.dart';
 import '../i18n/i18n.dart';
 import '../navigation/routes.dart';
 import '../widgets/app_toast.dart';

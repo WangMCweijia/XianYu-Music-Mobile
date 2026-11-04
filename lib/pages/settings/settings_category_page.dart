@@ -1,5 +1,6 @@
 import '../../src/widgets/modern_dialog.dart';
 import '../../src/widgets/predictive_dialog_route.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 

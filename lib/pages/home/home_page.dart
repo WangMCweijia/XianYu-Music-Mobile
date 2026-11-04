@@ -4,11 +4,9 @@ import 'package:go_router/go_router.dart';
 
 import '../../src/core/settings.dart';
 import '../../src/home/home_providers.dart';
-import '../../src/home/recommend_sheets_preview_provider.dart';
 import '../../src/library/library_provider.dart';
 import '../../src/navigation/shell.dart';
 import '../../src/player/player_provider.dart';
-import '../../src/plugin/plugin_provider.dart';
 import '../../src/widgets/flying_cover.dart';
 import '../../src/responsive/landscape.dart';
 import '../../src/widgets/cover_carousel.dart';
@@ -37,10 +35,9 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   List<Widget> _discoverBlocks(BuildContext context, WidgetRef ref) {
-    final hasEnabledPlugin = ref.watch(
-      pluginManagerProvider.select((s) => s.sources.any((p) => p.enabled)),
-    );
-    if (!hasEnabledPlugin) return const [];
+    // 三个区块一律常驻：各区块内部对「无音源/无数据」有自己的引导卡，
+    // 外层再一律隐藏会让用户连「需要装插件」这件事都看不到（换包名后
+    // 应用数据目录重建、插件为空时整个发现区凭空消失即此故）。
     return [
       _SectionHeader(
         title: tr('发现'),
@@ -56,18 +53,13 @@ class _HomePageState extends ConsumerState<HomePage> {
       const SizedBox(height: 14),
       const DailyRecommendSection(),
       const SizedBox(height: 26),
-      // 推荐歌单：无插件支持/无数据时整块隐藏（含标题，避免孤标题）
-      if (ref.watch(
-        recommendSheetsPreviewProvider.select((s) => s.hasData),
-      )) ...[
-        _SectionHeader(
-          title: tr('推荐歌单'),
-          action: _viewAllAction(context, ref, '/home/recommend-sheets'),
-        ),
-        const SizedBox(height: 14),
-        const RecommendSheetsSection(),
-        const SizedBox(height: 26),
-      ],
+      _SectionHeader(
+        title: tr('推荐歌单'),
+        action: _viewAllAction(context, ref, '/home/recommend-sheets'),
+      ),
+      const SizedBox(height: 14),
+      const RecommendSheetsSection(),
+      const SizedBox(height: 26),
     ];
   }
 

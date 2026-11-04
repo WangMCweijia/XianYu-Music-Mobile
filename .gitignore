@@ -131,3 +131,6 @@ tool/icons/package-lock.json
 tool/icons/sil/
 tool/icons/concepts/
 tool/icons/v2/*.png
+
+# 本地构建产物（APK 下载/解包）
+build_out/

@@ -10,6 +10,7 @@ import '../../src/home/home_providers.dart';
 import '../../src/home/top_lists_preview_provider.dart';
 import '../../src/home/recommend_sheets_preview_provider.dart';
 import '../../src/plugin/plugin_catalog.dart';
+import '../../src/plugin/plugin_provider.dart';
 import '../../src/navigation/shell.dart';
 import '../../src/responsive/landscape.dart';
 import '../../src/theme/theme_icon.dart';
@@ -445,9 +446,47 @@ class _RecommendSheetsBody extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final state = ref.watch(recommendSheetsPreviewProvider);
-    // 无数据时整块隐藏（home_page 同步按 hasData 隐藏标题，避免孤标题）
     final sheets = state.sheets;
-    if (!state.hasData || sheets.isEmpty) return const SizedBox.shrink();
+    if (!state.hasData || sheets.isEmpty) {
+      // 无数据不再整块消失：给引导卡，用户才知道是「缺音源」还是「暂时取不到」。
+      // 无启用音源时只能去装插件，有音源时给一次重试机会。
+      final hasEnabled = ref.watch(
+        pluginManagerProvider.select((s) => s.sources.any((p) => p.enabled)),
+      );
+      return _CardContainer(
+        onTap: hasEnabled
+            ? () => ref.invalidate(recommendSheetsPreviewProvider)
+            : () {
+                if (useLandscape(ref)) {
+                  ref
+                      .read(landscapeSettingsCategoryProvider.notifier)
+                      .state = '/plugin-manage';
+                  context.push('/settings');
+                } else {
+                  context.push('/plugin-manage');
+                }
+              },
+        child: Row(
+          children: [
+            Icon(Icons.queue_music_outlined, size: 22, color: scheme.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                hasEnabled
+                    ? tr('推荐歌单暂未获取到，点击重试')
+                    : tr('安装并启用音源插件后可获取推荐歌单'),
+                style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+              ),
+            ),
+            Icon(
+              hasEnabled ? Icons.refresh : Icons.chevron_right,
+              size: hasEnabled ? 20 : 18,
+              color: scheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

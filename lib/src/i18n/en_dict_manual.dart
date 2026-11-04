@@ -1741,7 +1741,7 @@ const Map<String, String> enDictManual = {
   '开启后本机作为 DLNA 设备出现在局域网，其它 App 可直接投歌到本端':
       'When enabled, this device appears as a DLNA device on the LAN. Other apps can cast songs to it.',
   '投送端看到的名字': 'Name seen by casting devices',
-  '音狐': 'YinHu Music',
+  '音狐音乐': 'YinHu Music',
   '该歌单已同步到云端': 'This playlist is synced to the cloud',
   '歌单已同步到云端': 'Playlist is synced to the cloud',
   '收藏已同步到云端': 'Favorites are synced to the cloud',

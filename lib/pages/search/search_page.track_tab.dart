@@ -302,6 +302,7 @@ class _TrackTabState extends ConsumerState<_TrackTab>
           paths: _paths,
           rowTopOf: (i) => topInset + i * rowExtent,
           itemExtent: rowExtent,
+          alignTop: topInset,
           bottom: bottomInset + 8,
           right: 12,
         ),

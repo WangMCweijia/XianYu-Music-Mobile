@@ -809,6 +809,7 @@ class _OnlineDetailPageState extends ConsumerState<OnlineDetailPage>
           paths: [for (final r in _songs) _queueItemOf(r).path],
           rowTopOf: (i) => 6 + i * (m.songCover + 2 * m.vPad),
           itemExtent: m.songCover + 2 * m.vPad,
+          alignTop: 6,
           bottom: MediaQuery.of(context).padding.bottom + 100 + 8,
           right: 12,
         ),

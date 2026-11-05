@@ -581,6 +581,7 @@ class _RecentListState extends ConsumerState<_RecentList> {
           paths: visible.map((e) => e.songPath).toList(),
           rowTopOf: (i) => topExtent + sortPad + i * rowExtent,
           itemExtent: rowExtent,
+          alignTop: topExtent + sortPad,
           bottom: bottomPad + 8,
           right: 12,
         ),

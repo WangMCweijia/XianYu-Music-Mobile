@@ -477,6 +477,7 @@ class _RecommendListState extends ConsumerState<_RecommendList> {
           paths: [for (final it in state.items) it.toQueueItem(quality).path],
           rowTopOf: (i) => i < rowTops.length ? rowTops[i] : rowTops.last,
           itemExtent: m.songCover + 2 * m.vPad,
+          alignTop: rowTops.isNotEmpty ? rowTops.first : 0,
           bottom: bottomPad + 8,
           right: 12,
         ),

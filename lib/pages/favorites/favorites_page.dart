@@ -530,6 +530,8 @@ class _SongsTabState extends ConsumerState<_SongsTab> {
                 paths: visible.map((e) => e.path).toList(),
                 rowTopOf: (i) => widget.topInset + i * rowExtent,
                 itemExtent: rowExtent,
+                // 定位行落在列表内边（顶栏下方），不被浮层压住
+                alignTop: widget.topInset,
                 bottom: bottomPad + 8,
                 right: 12,
               ),
@@ -709,6 +711,7 @@ class _SongsTabState extends ConsumerState<_SongsTab> {
                   rowTopOf: (i) =>
                       widget.topInset + toolPad + i * rowExtent,
                   itemExtent: rowExtent,
+                  alignTop: widget.topInset + toolPad,
                   bottom: bottomPad + 8,
                   right: 12,
                 ),
@@ -816,6 +819,7 @@ class _SongsTabState extends ConsumerState<_SongsTab> {
                 rowTopOf: (i) =>
                     widget.topInset + toolPad + i * rowExtent,
                 itemExtent: rowExtent,
+                alignTop: widget.topInset + toolPad,
                 bottom: bottomPad + 8,
                 right: 12,
               ),

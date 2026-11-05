@@ -275,10 +275,14 @@ class MainActivity : AudioServiceActivity() {
         }
         // 三键图标亮度随涂色：浅色底需深色图标（LIGHT_NAVIGATION_BAR），
         // 手算 luminance 避免 API 门槛；未涂色维持系统深浅模式逻辑
-        val override = navBarColorOverride
-        val lightBar = if (override != null) {
-            (Color.red(override) * 0.2126 + Color.green(override) * 0.7152 +
-                Color.blue(override) * 0.0722) / 255.0 > 0.5
+        // 透明覆盖色（alpha=0，悬浮底栏/沉浸页透出页面内容）不能按「黑色」
+        // 算亮度：算出来是 0，图标会被判成浅色（白色手势条/白色三键），
+        // 在浅色页面上几乎看不见——「小白条」观感正来自这里。此时回落到
+        // 系统深色模式判断。
+        val o = navBarColorOverride
+        val lightBar = if (o != null && Color.alpha(o) != 0) {
+            (Color.red(o) * 0.2126 + Color.green(o) * 0.7152 +
+                Color.blue(o) * 0.0722) / 255.0 > 0.5
         } else {
             (resources.configuration.uiMode and
                 android.content.res.Configuration.UI_MODE_NIGHT_MASK) !=
@@ -300,8 +304,8 @@ class MainActivity : AudioServiceActivity() {
      *  1. 关对比度 scrim：targetSdk 35+ 强制 edge-to-edge 后导航栏恒透明，
      *     系统默认叠加的对比度 scrim 即三键区灰带（实测 Android 17）；
      *  2. 涂底色 override：33/34 涂色仍生效；35+ 涂色 API 被系统忽略，
-     *     底色由 Flutter 侧实色垫（app.dart，API 35+ 启用）呈现；
-     *  3. 三键图标亮度随涂色，浅底深键/深底浅键。
+     *     导航栏恒透明，由页面内容直接透出（不再铺实色垫）；
+     *  3. 三键图标亮度随涂色，浅底深键/深底浅键；涂透明时回落系统明暗。
      * 与旧路径同节奏重申（onCreate/聚焦/首帧/600ms/通道），防 ROM 打回。
      */
     private fun applyModernSystemBars() {
@@ -317,10 +321,11 @@ class MainActivity : AudioServiceActivity() {
         @Suppress("DEPRECATION")
         window.navigationBarColor = navBarColorOverride ?: Color.TRANSPARENT
         window.isNavigationBarContrastEnforced = false
-        val override = navBarColorOverride
-        val lightBar = if (override != null) {
-            (Color.red(override) * 0.2126 + Color.green(override) * 0.7152 +
-                Color.blue(override) * 0.0722) / 255.0 > 0.5
+        // 同 applyLegacyEdgeToEdgeLayout：透明覆盖色不算「黑」，回落系统明暗
+        val o = navBarColorOverride
+        val lightBar = if (o != null && Color.alpha(o) != 0) {
+            (Color.red(o) * 0.2126 + Color.green(o) * 0.7152 +
+                Color.blue(o) * 0.0722) / 255.0 > 0.5
         } else {
             (resources.configuration.uiMode and
                 android.content.res.Configuration.UI_MODE_NIGHT_MASK) !=

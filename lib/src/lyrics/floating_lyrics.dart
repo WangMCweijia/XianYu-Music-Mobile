@@ -151,15 +151,16 @@ class FloatingLyricsController with WidgetsBindingObserver {
   Future<void> _show() async {
     final granted = await _isPermissionGranted();
     if (!granted) return;
-    await _channel.invokeMethod('show');
     final s = _container.read(settingsProvider).valueOrNull;
     if (s == null) return;
-    // 原生刚建好窗口，还没收到播放态；它把「未收到播放态」当作不可见，
-    // 所以这里不会先闪一个空面板。下面按 设置 → 歌词 → 播放态补齐，
-    // 播放态必须强制推（按去重会跳过，原生就一直停在不显示）。
+    // 先推设置/歌词/播放态，再拉起服务：原生 onCreate 会先把这些值填进字段
+    // 再建窗。反过来（先建窗、再推）在服务创建晚于推送时会先用默认值建窗，
+    // 表现就是「字号、宽度、位置记不住」。播放态必须强制推（去重会跳过，
+    // 原生就一直停在不可见状态）。
     _pushSettings(s);
     _pushLyrics(s);
     _pushPlayback(s, force: true);
+    await _channel.invokeMethod('show');
   }
 
   Future<void> _hide() async {
@@ -267,11 +268,32 @@ class FloatingLyricsController with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed || !_pendingEnableViaSettings) {
+    if (state != AppLifecycleState.resumed) return;
+    if (_pendingEnableViaSettings) {
+      _pendingEnableViaSettings = false;
+      _confirmPendingEnable();
+    }
+    unawaited(_resyncOnResume());
+  }
+
+  /// 回前台时把窗口、设置、歌词、播放态整体对齐一次。
+  ///
+  /// 悬浮窗服务与 Flutter 引擎是两套生命周期：服务可能被系统回收后重建，
+  /// 首次推送也可能早于服务创建（原生侧现在会用缓冲兜住）。这里再做一次
+  /// 幂等补偿，避免出现「窗口还是上一次的旧字号/旧位置」。
+  Future<void> _resyncOnResume() async {
+    if (!_enabled) return;
+    final s = _container.read(settingsProvider).valueOrNull;
+    if (s == null) return;
+    try {
+      await _channel.invokeMethod<void>('show');
+    } catch (e) {
+      AppLog.debug('lyric', '桌面歌词窗口重建失败: $e');
       return;
     }
-    _pendingEnableViaSettings = false;
-    _confirmPendingEnable();
+    _pushSettings(s);
+    _pushLyrics(s);
+    _pushPlayback(s, force: true);
   }
 
   Future<void> _confirmPendingEnable() async {

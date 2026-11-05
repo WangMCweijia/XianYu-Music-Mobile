@@ -16,6 +16,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -96,9 +97,31 @@ class LyricsOverlayService : Service() {
         instance = this
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        // 恢复上次的设置：一是本进程内 Flutter 推送早于服务创建（startService 异步，
+        // 那些推送被缓冲在 companion 里），二是更早一次运行留在本地的设置。
+        // 缺了这一步就会拿上面手写的默认值建窗，表现正是「字号/宽度/位置记不住」。
+        restoreSettings()
+        pendingLyrics?.let { lyricsJson = it }
+        pendingPlayback?.let { playback ->
+            positionMs = playback.first
+            playing = playback.second
+            playbackSynced = true
+        }
+        pendingLocked?.let { locked = it }
+        Log.d(TAG, "onCreate restored settings=${pendingSettings != null} locked=$locked")
         FlutterMessengerHolder.messenger?.let {
             eventsChannel = MethodChannel(it, EVENTS_CHANNEL)
         }
+    }
+
+    private fun restoreSettings() {
+        val json = pendingSettings
+            ?: runCatching {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_SETTINGS, null)
+            }.getOrNull()
+        if (json.isNullOrBlank()) return
+        pendingSettings = json
+        parseSettings(json)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -168,6 +191,9 @@ class LyricsOverlayService : Service() {
     }
 
     fun setSettings(json: String) {
+        // 空串直接忽略：否则 parseSettings 早退、applySettings 会把窗口按默认值重排
+        if (json.isBlank()) return
+        pendingSettings = json
         parseSettings(json)
         applySettings(revealControls = false)
     }
@@ -180,10 +206,24 @@ class LyricsOverlayService : Service() {
     fun resetPosition() {
         xPos = 0
         yPos = 96
+        persistPosition(0, 96)
         layoutParams?.let { params ->
             params.x = 0
             params.y = 96
             rootView?.let { runCatching { windowManager.updateViewLayout(it, params) } }
+        }
+    }
+
+    /** 位置落在本地，服务被系统回收重建后仍能回到用户拖到的地方。 */
+    private fun persistPosition(x: Int, y: Int) {
+        val base = pendingSettings ?: return
+        runCatching {
+            val patched = JSONObject(base).put("x", x).put("y", y).toString()
+            pendingSettings = patched
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putString(KEY_SETTINGS, patched)
+                .apply()
         }
     }
 
@@ -504,6 +544,7 @@ class LyricsOverlayService : Service() {
                 root.removeCallbacks(longPressRunnable)
                 xPos = params.x
                 yPos = params.y
+                persistPosition(xPos, yPos)
                 emitEvent("onPositionChanged", mapOf("x" to xPos, "y" to yPos))
                 when {
                     movedDuringTouch -> showControlsWithAnimation() // 拖拽结束：保持整块 N 秒后收起
@@ -757,6 +798,57 @@ class LyricsOverlayService : Service() {
         private const val DRAG_THRESHOLD_DP = 8
         private const val CONTROL_ANIMATION_MS = 220L
         private const val CONTROL_HIDDEN_SCALE = 0.8f
+
+        private const val TAG = "LyricsOverlay"
+        private const val PREFS_NAME = "xianyu_floating_lyrics"
+        private const val KEY_SETTINGS = "settingsJson"
+
+        // Flutter 的推送可能早于服务创建（startService 是异步的，实例此时为 null），
+        // 旧实现 `instance?.setSettings()` 会把这些推送静默丢掉，窗口就只能拿
+        // 内存里的默认值建出来——字号变小、宽度变窄、位置回到顶部。这里统一缓冲：
+        // 服务一起来先用缓冲/本地值把字段填好，再按需补推。
+        @Volatile
+        private var pendingSettings: String? = null
+
+        @Volatile
+        private var pendingLyrics: String? = null
+
+        @Volatile
+        private var pendingPlayback: Pair<Long, Boolean>? = null
+
+        @Volatile
+        private var pendingLocked: Boolean? = null
+
+        fun pushSettings(context: Context, json: String) {
+            if (json.isBlank()) return
+            pendingSettings = json
+            runCatching {
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_SETTINGS, json)
+                    .apply()
+            }
+            instance?.setSettings(json)
+        }
+
+        fun pushLyrics(json: String) {
+            pendingLyrics = json
+            instance?.setLyrics(json)
+        }
+
+        fun pushPlayback(posMs: Long, isPlaying: Boolean) {
+            pendingPlayback = posMs to isPlaying
+            instance?.setPlayback(posMs, isPlaying)
+        }
+
+        fun pushLocked(lock: Boolean) {
+            pendingLocked = lock
+            instance?.setLocked(lock)
+        }
+
+        fun pushResetPosition() {
+            instance?.resetPosition()
+        }
 
         @Volatile
         var instance: LyricsOverlayService? = null

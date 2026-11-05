@@ -1014,29 +1014,30 @@ class MainActivity : AudioServiceActivity() {
                         result.success(null)
                     }
                     "setLyrics" -> {
-                        LyricsOverlayService.instance?.setLyrics(
+                        LyricsOverlayService.pushLyrics(
                             call.argument<String>("json") ?: "")
                         result.success(null)
                     }
                     "setPlayback" -> {
                         val posMs = (call.argument<Number>("positionMs")?.toLong()) ?: 0L
-                        LyricsOverlayService.instance?.setPlayback(
+                        LyricsOverlayService.pushPlayback(
                             posMs,
                             call.argument<Boolean>("isPlaying") ?: false)
                         result.success(null)
                     }
                     "setSettings" -> {
-                        LyricsOverlayService.instance?.setSettings(
-                            call.argument<String>("json") ?: "")
+                        // 服务可能还没创建好（startService 异步），交给静态入口缓冲
+                        LyricsOverlayService.pushSettings(
+                            this, call.argument<String>("json") ?: "")
                         result.success(null)
                     }
                     "setLocked" -> {
-                        LyricsOverlayService.instance?.setLocked(
+                        LyricsOverlayService.pushLocked(
                             call.argument<Boolean>("locked") ?: false)
                         result.success(null)
                     }
                     "resetPosition" -> {
-                        LyricsOverlayService.instance?.resetPosition()
+                        LyricsOverlayService.pushResetPosition()
                         result.success(null)
                     }
                     "isPermissionGranted" -> {

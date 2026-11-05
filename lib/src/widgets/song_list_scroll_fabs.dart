@@ -74,12 +74,17 @@ double? _rowTopFromRows(
   for (final r in rows) {
     if (r.$1 == index) return baseTop + r.$2;
   }
-  var i = 0;
-  while (i < rows.length && rows[i].$1 < index) {
-    i++;
+  // 需要两行才能反推行距：目标在已挂载区之前取前两行，之后取后两行
+  if (rows.length < 2) return null;
+  var hi = rows.indexWhere((r) => r.$1 > index);
+  if (hi < 0) hi = rows.length - 1;
+  var lo = hi - 1;
+  if (lo < 0) {
+    lo = 0;
+    hi = 1;
   }
-  final upper = i > 0 ? rows[i - 1] : rows[i];
-  final lower = i < rows.length ? rows[i] : rows[i - 1];
+  final upper = rows[lo];
+  final lower = rows[hi];
   if (upper.$1 == lower.$1) return null;
   final h = (lower.$2 - upper.$2) / (lower.$1 - upper.$1);
   if (!h.isFinite || h <= 0) return null;

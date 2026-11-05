@@ -40,11 +40,20 @@ void main() {
     Future<void> future,
   ) async {
     var done = false;
-    future.whenComplete(() => done = true);
+    Object? error;
+    future.then((_) => done = true,
+        onError: (Object e, StackTrace st) {
+      error = e;
+      done = true;
+    });
     for (var i = 0; i < 400 && !done; i++) {
       await tester.pump(const Duration(milliseconds: 16));
     }
     expect(done, isTrue, reason: 'revealListRow 未在 6.4s 内完成');
+    if (error != null) fail('revealListRow 抛出异常: $error');
+    // AppLog 落盘防抖 800ms：让定时器走完，否则测试结束会撞
+    // "A Timer is still pending" 不变式
+    await tester.pump(const Duration(seconds: 1));
   }
 
   testWidgets('估算漏掉顶部内边距时仍精确对齐目标行', (tester) async {

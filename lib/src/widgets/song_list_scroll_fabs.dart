@@ -28,22 +28,26 @@ RenderSliverMultiBoxAdaptor? _findMultiBoxSliver(RenderObject ro) {
   return found;
 }
 
-/// 读出当前已挂载行的 (index, 行顶相对 sliver 起点偏移)。
+/// 读出已挂载行的 (index, 行顶相对 sliver 起点偏移) 与列表在该 sliver
+/// 之前的内容高度（= 外层 SliverPadding/头部的挤出量，也就是"列表顶部
+/// 内边距"）。
 ///
 /// 定位不能只依赖调用方给的「i × 行高」：行高由内容实测、列表顶部内边距
 /// 随折叠搜索栏变化、字母索引列表还混着组头，任何一项与假设不符都会让
 /// 靠后的曲目越滚越偏。这里直接读 RenderSliverMultiBoxAdaptor 的真实
-/// 布局结果，拿到的是像素级真值。
-List<(int, double)> _mountedRowTops(ScrollController controller) {
-  final rows = <(int, double)>[];
+/// 布局结果，连顶部偏移都取 sliver 自己的 precedingScrollExtent，
+/// 不再是各页面手算的 topInset。
+({List<(int, double)> rows, double? baseTop})? _measureRows(
+    ScrollController controller) {
   try {
-    if (!controller.hasClients) return rows;
+    if (!controller.hasClients) return null;
     final ctx = controller.position.context;
-    if (ctx is! ScrollableState) return rows;
+    if (ctx is! ScrollableState) return null;
     final ro = ctx.context.findRenderObject();
-    if (ro == null) return rows;
+    if (ro == null) return null;
     final sliver = _findMultiBoxSliver(ro);
-    if (sliver == null) return rows;
+    if (sliver == null) return null;
+    final rows = <(int, double)>[];
     for (var child = sliver.firstChild;
         child != null;
         child = sliver.childAfter(child)) {
@@ -54,10 +58,11 @@ List<(int, double)> _mountedRowTops(ScrollController controller) {
         rows.add((pd.index!, pd.layoutOffset!));
       }
     }
+    return (rows: rows, baseTop: sliver.constraints.precedingScrollExtent);
   } catch (_) {
     // 布局树结构变动中（拖拽/重建）取不到就回退到估算
+    return null;
   }
-  return rows;
 }
 
 /// 目标行在内容坐标里的顶部偏移。
@@ -94,10 +99,13 @@ Future<void> revealListRow(
   Duration duration = const Duration(milliseconds: 320),
 }) async {
   if (!controller.hasClients || index < 0) return;
-  final baseTop = rowTopOf?.call(0) ?? 0.0;
   for (var attempt = 0; attempt < 3; attempt++) {
     if (!controller.hasClients) return;
-    final rows = _mountedRowTops(controller);
+    final m = _measureRows(controller);
+    final rows = m?.rows ?? const <(int, double)>[];
+    // 顶部偏移优先取 sliver 实测的 precedingScrollExtent；拿不到时才回落到
+    // 调用方的 rowTopOf(0)（各页面的 padding.top 估算）
+    final baseTop = m?.baseTop ?? rowTopOf?.call(0) ?? 0.0;
     final exact = rows.any((r) => r.$1 == index);
     final measured = _rowTopFromRows(rows, index, baseTop);
     final estimate = rowTopOf?.call(index);
@@ -108,6 +116,7 @@ Future<void> revealListRow(
     AppLog.debug(
         'locate',
         'reveal idx=$index attempt=$attempt rows=${rows.length} '
+        'baseTop=${baseTop.toStringAsFixed(0)} '
         'measured=${measured?.toStringAsFixed(0) ?? '-'} '
         'estimate=${estimate?.toStringAsFixed(0) ?? '-'} '
         'target=${target.toStringAsFixed(0)} '

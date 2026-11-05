@@ -17,10 +17,13 @@ extension _ShellScaffoldLandscape on _ShellScaffoldState {
       if (landscape) {
         await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       } else {
-        await SystemChrome.setEnabledSystemUIMode(
-          SystemUiMode.manual,
-          overlays: SystemUiOverlay.values,
-        );
+        // 竖屏用 edgeToEdge，不再用 manual + 全 overlay：manual 的语义是
+        // 「把系统栏显示出来」，引擎按普通（非全屏）窗口布局处理，导航栏
+        // 由系统涂默认底色——每个页面底部于是多出一条与内容无关的浅色带
+        // （即「小白条不沉浸」）。edgeToEdge 明确要求内容铺到系统栏之下、
+        // 状态栏/导航栏全透明，与 Android 15+ 的强制行为一致，也与本应用
+        // 全量手动 inset 排版（MediaQuery.padding）配套。
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
         SystemChrome.setSystemUIOverlayStyle(
           const SystemUiOverlayStyle(statusBarColor: Colors.transparent),
         );

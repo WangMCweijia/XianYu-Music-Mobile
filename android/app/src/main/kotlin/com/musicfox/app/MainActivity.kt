@@ -306,6 +306,14 @@ class MainActivity : AudioServiceActivity() {
      */
     private fun applyModernSystemBars() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        // 双保险：确保窗口是 edge-to-edge（内容铺到系统栏之下、系统栏透明）。
+        // Flutter 侧竖屏已切 SystemUiMode.edgeToEdge，但 ROM 可能在首帧/聚焦/
+        // 键盘等时机把 decorFits 打回 true——一旦打回，系统会按普通布局给导航栏
+        // 涂一层默认底色，每个页面底部都多出一条浅色带（小白条不沉浸）。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            @Suppress("DEPRECATION")
+            window.setDecorFitsSystemWindows(false)
+        }
         @Suppress("DEPRECATION")
         window.navigationBarColor = navBarColorOverride ?: Color.TRANSPARENT
         window.isNavigationBarContrastEnforced = false

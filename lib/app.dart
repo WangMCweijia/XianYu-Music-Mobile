@@ -530,25 +530,29 @@ class _XianYuAppState extends ConsumerState<XianYuApp> with WidgetsBindingObserv
                   !ref.watch(navOnRootPathProvider);
               final navPadSdk =
                   ref.watch(androidSdkIntProvider).valueOrNull ?? 0;
+              // 手势导航判定：全屏手势模式下 navigationBars 的 bottom inset
+              // 就是手势条自身的高度（典型 16~32dp），三键导航栏典型
+              // 42~48dp，40dp 落在两档之间，两侧都不易误判。手势模式下系统
+              // 把手势条画成悬浮细条、本就要求内容透到它后面，此时任何底部
+              // 垫子（实色/玻璃/液态/壁纸磨砂）都会变成一条不透明色带——
+              // 「小白条不沉浸」的直接来源，这里一律不垫。
+              final navGestureBar =
+                  navPadSafeBottom > 0 && navPadSafeBottom < 40;
               final navPadSide = ref.watch(settingsProvider.select(
                     (s) => s.valueOrNull?.navBarPosition,
                   )) ==
                   NavBarPosition.side;
               final navPadWallpaper = wallpaperGlassActive(ref);
-              // 新安卓（API 35+）三键区条带双轨：
-              // 玻璃垫（PlayerNavigatorHost 之前槽位）——毛玻璃开时与
-              // 底栏同一份 fill/sigma/共享 backdrop 组，材质随底栏，固
-              // 定与悬浮底栏均适用；播放页 Navigator 在其上保持沉浸不
-              // 垫。blur 采样在该槽位已真机验证可靠，PlayerNavigatorHost
-              // 之上层级的 blur 不可靠（半透明读作直接透明，已实测证伪）
-              // 色块垫（PlayerNavigatorHost 之上，对齐旧安卓原生涂色覆
-              // 盖一切的 z 序）——实底档悬浮=appSurfaceBg（不透明页面
-              // 背景），固定/侧边栏=底栏同源 fill 合成色。scaffoldBackg
-              // roundColor 是 transparent，不可直接作垫色（悬浮透底事
-              // 故根因）
+              // 新安卓（API 35+）三键区条带：只保留材质垫（毛玻璃/液态/
+              // 壁纸磨砂）一种形态，且必须挂在 PlayerNavigatorHost 之前
+              // ——毛玻璃开时与底栏同一份 fill/sigma/共享 backdrop 组，
+              // 材质随底栏；blur 采样在该槽位已真机验证可靠，
+              // PlayerNavigatorHost 之上层级的 blur 不可靠（半透明读作
+              // 直接透明，已实测证伪）。实色垫已移除，导航栏恒透明。
               final stripSdkNew = navPadSdk >= 35 &&
                   !ref.watch(isLandscapeProvider) &&
-                  navPadSafeBottom > 0;
+                  navPadSafeBottom > 0 &&
+                  !navGestureBar;
               final (barFill, _) =
                   fixedNavBarSurfaceFill(context, ref);
               // 玻璃垫按「材质开启」口径（毛玻璃或液态任一开，性能优先
@@ -575,19 +579,17 @@ class _XianYuAppState extends ConsumerState<XianYuApp> with WidgetsBindingObserv
                   !stripLiquidShow &&
                   !ref.watch(isLandscapeProvider) &&
                   !navPadSide &&
+                  !navGestureBar &&
                   (navPadFloating || navPadHidden) &&
                   navPadSafeBottom > 0;
-              final Color? navBlockColor;
-              if (!stripSdkNew || navPadWallpaper || frostStripShow) {
-                navBlockColor = null;
-              } else if (navPadFloating && !navPadSide) {
-                navBlockColor = appSurfaceBg(context);
-              } else {
-                navBlockColor = Color.alphaBlend(
-                  barFill,
-                  Theme.of(context).scaffoldBackgroundColor,
-                );
-              }
+              // 全部页面沉浸：不再给系统导航栏（手势条/三键区）铺任何
+              // 不透明实色垫。新安卓（API 35+）原生 navigationBarColor 涂
+              // 色已被系统忽略，导航栏本就透明；此前在 Flutter 侧兜一块
+              // appSurfaceBg 的实色垫（挂在 PlayerNavigatorHost 之上，盖住
+              // 全部路由），结果是每个页面底部都被切出一条与页面内容无关
+              // 的浅色带——即「小白条不沉浸」。现在让它彻底透出页面内容，
+              // 与系统 edge-to-edge 语义一致；三键图标亮度仍由原生
+              // isAppearanceLightNavigationBars 按明暗主题维护。
               // 全局按压缩放宿主：罩住全部路由与系统 chrome
               return PressScaleHost(
                 child: MediaQuery(
@@ -677,16 +679,6 @@ class _XianYuAppState extends ConsumerState<XianYuApp> with WidgetsBindingObserv
                     // 播放页独立 Navigator（五级模型第二级）：位于播放条
                     // 之上、飞行封面之下——播放页转场物理盖过播放条
                     const PlayerNavigatorHost(),
-                    // 新安卓（API 35+）三键区实色条带：z 序对齐旧安卓的
-                    // 原生涂色（系统窗口覆盖一切应用内容，含播放页）
-                    if (navBlockColor != null)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        height: navPadSafeBottom,
-                        child: ColoredBox(color: navBlockColor),
-                      ),
                     // 飞行封面顶层宿主（第一级）：高于播放条与一切路由，
                     // 预测性返回的页面缩放不再牵连封面飞行
                     Overlay(

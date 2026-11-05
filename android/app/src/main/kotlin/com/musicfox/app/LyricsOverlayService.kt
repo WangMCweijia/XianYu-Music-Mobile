@@ -63,6 +63,8 @@ class LyricsOverlayService : Service() {
     private var showBackground = true
     private var showNextLine = false
     private var hideWhenPaused = false
+    // 是否已收到 Flutter 侧推来的播放态：未收到前窗口保持不可见
+    private var playbackSynced = false
     private var hideInLandscape = false
     private var widthPercent = 92
     private var useLyricFont = false
@@ -159,6 +161,7 @@ class LyricsOverlayService : Service() {
     fun setPlayback(posMs: Long, isPlaying: Boolean) {
         positionMs = posMs
         playing = isPlaying
+        playbackSynced = true
         lyricView?.setPlayback(posMs, isPlaying)
         playPauseButton?.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         updateVisibility(isPlaying)
@@ -422,13 +425,20 @@ class LyricsOverlayService : Service() {
     }
 
     private fun updateVisibility(playingOverride: Boolean? = null) {
+        val root = rootView ?: return
+        // 窗口刚建好、播放态还没到：先不显示。否则冷启动（歌曲恢复为暂停态、
+        // 且用户勾了「暂停时隐藏」）会先按默认值闪一个空面板出来。
+        if (!playbackSynced) {
+            root.visibility = View.GONE
+            return
+        }
         val isPlaying = playingOverride ?: playing
         val hidden = (hideWhenPaused && !isPlaying) ||
             (
                 hideInLandscape &&
                     resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
                 )
-        rootView?.visibility = if (hidden) View.GONE else View.VISIBLE
+        root.visibility = if (hidden) View.GONE else View.VISIBLE
     }
 
     private fun setLocked(lock: Boolean, revealControls: Boolean = true) {

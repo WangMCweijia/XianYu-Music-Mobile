@@ -279,6 +279,8 @@ class _LetterIndexSongListState extends ConsumerState<LetterIndexSongList> {
               paths: songs.map((s) => s.path).toList(),
               rowTopOf: _rowTopOf,
               itemExtent: _rowExtent,
+              // 定位行落在列表 padding 内边（顶栏/字母条下方）
+              alignTop: widget.padding?.top ?? 0.0,
               bottom: (widget.padding?.bottom ?? 0.0) + 8,
               right: 40,
             ),

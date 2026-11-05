@@ -28,25 +28,31 @@ RenderSliverMultiBoxAdaptor? _findMultiBoxSliver(RenderObject ro) {
   return found;
 }
 
-/// 读出已挂载行的 (index, 行顶相对 sliver 起点偏移) 与列表在该 sliver
-/// 之前的内容高度（= 外层 SliverPadding/头部的挤出量，也就是"列表顶部
-/// 内边距"）。
+/// 已挂载行**相对滚动视口顶部**的位置（px），直接读自渲染树。
 ///
-/// 定位不能只依赖调用方给的「i × 行高」：行高由内容实测、列表顶部内边距
-/// 随折叠搜索栏变化、字母索引列表还混着组头，任何一项与假设不符都会让
-/// 靠后的曲目越滚越偏。这里直接读 RenderSliverMultiBoxAdaptor 的真实
-/// 布局结果，连顶部偏移都取 sliver 自己的 precedingScrollExtent，
-/// 不再是各页面手算的 topInset。
-({List<(int, double)> rows, double? baseTop})? _measureRows(
+/// 定位不能用「i × 行高」，也不能用「precedingScrollExtent + layoutOffset」
+/// 这类换算：只要有一项前提与实际布局不符（列表顶部内边距随折叠搜索栏
+/// 变化、字母索引里混着组头、外层还有变换），靠后的曲目就会越滚越偏——
+/// 线上就是第 52 首定位后顶部显示第 55 首。这里把每行 render object 的
+/// global 位置与视口自身的 global 位置相减，得到的就是「这行此刻离视口
+/// 顶部多远」，是像素级真值、不含任何假设；要滚多少就等于它多少。
+({List<(int, double)> rows, double viewportTop})? _measureRows(
     ScrollController controller) {
   try {
     if (!controller.hasClients) return null;
     final ctx = controller.position.context;
     if (ctx is! ScrollableState) return null;
-    final ro = ctx.context.findRenderObject();
-    if (ro == null) return null;
-    final sliver = _findMultiBoxSliver(ro);
+    final root = ctx.context.findRenderObject();
+    if (root == null) return null;
+    final sliver = _findMultiBoxSliver(root);
     if (sliver == null) return null;
+    // 视口本体的 global 位置：与行的 global 位置同一坐标系
+    RenderObject? vp = sliver;
+    while (vp != null && vp is! RenderViewportBase) {
+      vp = vp.parent;
+    }
+    if (vp is! RenderViewportBase || !vp.hasSize) return null;
+    final vpTop = vp.localToGlobal(Offset.zero).dy;
     final rows = <(int, double)>[];
     for (var child = sliver.firstChild;
         child != null;
@@ -54,27 +60,25 @@ RenderSliverMultiBoxAdaptor? _findMultiBoxSliver(RenderObject ro) {
       final pd = child.parentData;
       if (pd is SliverMultiBoxAdaptorParentData &&
           pd.index != null &&
-          pd.layoutOffset != null) {
-        rows.add((pd.index!, pd.layoutOffset!));
+          child.attached) {
+        rows.add((pd.index!, child.localToGlobal(Offset.zero).dy - vpTop));
       }
     }
-    return (rows: rows, baseTop: sliver.constraints.precedingScrollExtent);
+    return (rows: rows, viewportTop: vpTop);
   } catch (_) {
-    // 布局树结构变动中（拖拽/重建）取不到就回退到估算
+    // 布局树结构变动中（拖拽/重建）取不到，调用方回退估算
     return null;
   }
 }
 
-/// 目标行在内容坐标里的顶部偏移。
-/// [rows] 是已挂载行的真值；目标行可见时直接命中，不可见（差异较大、
-/// 已滑出构建窗口）时用上下相邻两行反推真实行高再外插。
-double? _rowTopFromRows(
-    List<(int, double)> rows, int index, double baseTop) {
+/// 把第 [index] 行顶对齐视口顶部还差多少像素（正=要往下滚）。
+/// 目标行已挂载时直接返回它的真实位置；未挂载时用相距最近的两行实测
+/// 行距外插——外插只是为了一次跳到位，跳完下一轮就会实测收敛。
+double? _neededDelta(List<(int, double)> rows, int index) {
   if (rows.isEmpty) return null;
   for (final r in rows) {
-    if (r.$1 == index) return baseTop + r.$2;
+    if (r.$1 == index) return r.$2;
   }
-  // 需要两行才能反推行距：目标在已挂载区之前取前两行，之后取后两行
   if (rows.length < 2) return null;
   var hi = rows.indexWhere((r) => r.$1 > index);
   if (hi < 0) hi = rows.length - 1;
@@ -83,53 +87,60 @@ double? _rowTopFromRows(
     lo = 0;
     hi = 1;
   }
-  final upper = rows[lo];
-  final lower = rows[hi];
-  if (upper.$1 == lower.$1) return null;
-  final h = (lower.$2 - upper.$2) / (lower.$1 - upper.$1);
-  if (!h.isFinite || h <= 0) return null;
-  return baseTop + upper.$2 + (index - upper.$1) * h;
+  final a = rows[lo];
+  final b = rows[hi];
+  if (a.$1 == b.$1) return null;
+  final pitch = (b.$2 - a.$2) / (b.$1 - a.$1);
+  if (!pitch.isFinite || pitch <= 0) return null;
+  return a.$2 + (index - a.$1) * pitch;
 }
 
-/// 把虚拟列表中第 [index] 行对齐到视口顶部。
+/// 把虚拟列表中第 [index] 行对齐到可视区顶部。
 ///
-/// 不依赖调用方给的行高假设：[rowTopOf] 只用于首次落点的粗估，真正落位
-/// 由已挂载行的实测 layoutOffset 决定；目标行尚未构建时用相邻行反推
-/// 行高外插，跳一次后再复测收敛。列表无行高信息（如播放队列）时传 null
-/// 即可，纯靠实测外插。
+/// 闭环：读实测位置 → 按差值滚动 → 再读实测位置复测，直到差值为 0。
+/// [rowTopOf] 只在渲染树读不到时兜底（各页面的 padding 估算），不再参与
+/// 定位计算本身；列表没有行高信息（如播放队列）时传 null 即可。
+///
+/// [alignTop] 是「可视区顶部」相对视口顶部的偏移：列表上方通常压着顶栏、
+/// 排序条这类浮层，目标行对齐到 0 会被它们盖住半行。传列表自身的
+/// padding.top 即等于「该行静止时的落位」——正好在浮层下方，且上方不会
+/// 露出半截前一行。
 Future<void> revealListRow(
   ScrollController controller,
   int index, {
   double Function(int index)? rowTopOf,
+  double alignTop = 0,
   Duration duration = const Duration(milliseconds: 320),
 }) async {
   if (!controller.hasClients || index < 0) return;
-  for (var attempt = 0; attempt < 3; attempt++) {
+  for (var attempt = 0; attempt < 4; attempt++) {
     if (!controller.hasClients) return;
+    final pos = controller.position;
     final m = _measureRows(controller);
     final rows = m?.rows ?? const <(int, double)>[];
-    // 顶部偏移优先取 sliver 实测的 precedingScrollExtent；拿不到时才回落到
-    // 调用方的 rowTopOf(0)（各页面的 padding.top 估算）
-    final baseTop = m?.baseTop ?? rowTopOf?.call(0) ?? 0.0;
-    final exact = rows.any((r) => r.$1 == index);
-    final measured = _rowTopFromRows(rows, index, baseTop);
+    final measured = _neededDelta(rows, index);
+    // 兜底：渲染树整棵读不到时，才用调用方给的内容坐标估算
     final estimate = rowTopOf?.call(index);
-    final basis = measured ?? estimate;
-    if (basis == null) return;
-    final target = basis.clamp(0.0, controller.position.maxScrollExtent);
-    final delta = target - controller.position.pixels;
+    final delta = measured != null
+        ? measured - alignTop
+        : (estimate == null ? null : estimate - pos.pixels - alignTop);
     AppLog.debug(
         'locate',
         'reveal idx=$index attempt=$attempt rows=${rows.length} '
-        'baseTop=${baseTop.toStringAsFixed(0)} '
         'measured=${measured?.toStringAsFixed(0) ?? '-'} '
         'estimate=${estimate?.toStringAsFixed(0) ?? '-'} '
-        'target=${target.toStringAsFixed(0)} '
-        'delta=${delta.toStringAsFixed(0)}');
+        'delta=${delta?.toStringAsFixed(0) ?? '-'} '
+        'pixels=${pos.pixels.toStringAsFixed(0)} '
+        'vpTop=${m?.viewportTop.toStringAsFixed(0) ?? '-'}');
+    if (delta == null) return;
     if (delta.abs() <= 0.5) return;
-    await controller.animateTo(target, duration: duration, curve: Curves.easeOutCubic);
-    // 精确命中目标行：这一跳的落点就是真值，收敛；外插估算则需要再复测
-    if (exact) return;
+    final target = (pos.pixels + delta).clamp(0.0, pos.maxScrollExtent);
+    if ((target - pos.pixels).abs() <= 0.5) return;
+    await controller.animateTo(
+      target,
+      duration: delta.abs() > 400 ? duration : const Duration(milliseconds: 140),
+      curve: Curves.easeOutCubic,
+    );
   }
 }
 
@@ -140,6 +151,7 @@ class SongListScrollFabs extends ConsumerWidget {
     required this.paths,
     required this.rowTopOf,
     required this.itemExtent,
+    this.alignTop = 0,
     this.bottom = 12,
     this.right = 12,
   });
@@ -151,6 +163,9 @@ class SongListScrollFabs extends ConsumerWidget {
   final double Function(int songIndex) rowTopOf;
 
   final double itemExtent;
+
+  /// 可视区顶部偏移（列表 padding.top）：定位行落在这里，避开顶栏/排序条
+  final double alignTop;
 
   final double bottom;
   final double right;
@@ -207,7 +222,12 @@ class SongListScrollFabs extends ConsumerWidget {
               'tap cur=${_tail24(current?.path ?? '')} hasClients=$hasClients '
               'idx=$currentIndex offset=${hasClients ? offset.toStringAsFixed(0) : '-'}');
           if (!hasClients || currentIndex < 0) return;
-          await revealListRow(controller, currentIndex, rowTopOf: rowTopOf);
+          await revealListRow(
+            controller,
+            currentIndex,
+            rowTopOf: rowTopOf,
+            alignTop: alignTop,
+          );
         }
 
         return Positioned(

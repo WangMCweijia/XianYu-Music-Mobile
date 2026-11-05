@@ -427,6 +427,8 @@ class _SongsListViewState extends ConsumerState<SongsListView> {
               paths: songs.map((s) => s.path).toList(),
               rowTopOf: (i) => (padding?.top ?? 0.0) + i * rowExtent,
               itemExtent: rowExtent,
+              // 定位行落在列表 padding 内边（顶栏/排序条下方），不被浮层压住
+              alignTop: padding?.top ?? 0.0,
               bottom: (padding?.bottom ?? 0.0) + 8,
               right: 12,
             ),

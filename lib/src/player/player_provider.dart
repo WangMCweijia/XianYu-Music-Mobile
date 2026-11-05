@@ -51,6 +51,7 @@ import 'media_url.dart';
 import 'cast_provider.dart';
 import 'online_quality_probe.dart';
 import 'online_precache.dart';
+import 'online_cache_alias.dart';
 import '../i18n/i18n.dart';
 
 part 'player_provider.cover_materializer.dart';
@@ -1059,6 +1060,22 @@ class PlayerNotifier extends StateNotifier<PlaybackState>
       );
 
       final key = _songProbeKey(songJson, item);
+      // 已缓存直放：在线直链普遍带 vkey/token，冷启动重新解析出来的地址和上次
+      // 不是同一条，按 URL 哈希落盘的流缓存因此永远命不中。这里先用「歌曲身份
+      // +音质」找回上次那条直链，缓存确认完整（.done）就直接起播，不碰网络。
+      if (await _tryCachedOnlineStart(
+        item,
+        songJson,
+        candidates,
+        probeKey: key,
+        startAtSecs: startAtSecs,
+        startPlayback: startPlayback,
+      )) {
+        // 缓存直放的可能比当前设置的目标音质低（上次是降级下来的），
+        // 与正常起播一样给一次后台升档机会
+        unawaited(_maybeAutoUpgradeQuality(item, preferred, fb0));
+        return;
+      }
       final probe = onlineQualityProbeRegistry.ensure(
         key,
         _buildResolveCallback(songJson, item),
@@ -1082,6 +1099,7 @@ class PlayerNotifier extends StateNotifier<PlaybackState>
             item: item,
             ekey: start.ekey,
             cek: start.cek,
+            quality: start.quality,
             startAtSecs: startAtSecs,
             isPlaying: startPlayback,
           );
@@ -1154,6 +1172,7 @@ class PlayerNotifier extends StateNotifier<PlaybackState>
       item: item,
       ekey: url.ekey,
       cek: url.cek,
+      quality: url.quality,
       startAtSecs: startAtSecs,
       isPlaying: startPlayback,
     );

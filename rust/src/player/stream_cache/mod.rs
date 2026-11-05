@@ -168,7 +168,7 @@ impl StreamCacheManager {
 
 			if let Some(key) = oldest_key {
 				if let Some(entry) = self.entries.remove(&key) {
-					let _ = std::fs::remove_file(&entry.path);
+					remove_cache_files(&entry.path);
 					self.current_size = self.current_size.saturating_sub(entry.size);
 				}
 			} else {
@@ -216,7 +216,13 @@ impl StreamCacheManager {
 
 			let size = metadata.len();
 			if size == 0 {
-				let _ = std::fs::remove_file(&path);
+				remove_cache_files(&path);
+				continue;
+			}
+			// 上次进程被杀留下的半截文件：没有续传实现，直接删掉。
+			// 留着会被当作完整缓存伺服出去（列表里显示已缓存、播到一半断掉）。
+			if marker_path(&path, "part").exists() {
+				remove_cache_files(&path);
 				continue;
 			}
 			let last_modified = metadata.modified().ok().unwrap_or_else(SystemTime::now);
@@ -340,6 +346,28 @@ pub(crate) fn url_hash(url: &str) -> String {
 	hex::encode(&hasher.finalize()[..16])
 }
 
+/// 缓存条目的旁路标记文件（与 `<hash>.dat` 同目录同名前缀）：
+/// - `.part`：下载进行中，进程被杀后残留 → 证明文件残缺；
+/// - `.done`：一次性完整写完 → 允许「按歌曲身份免取址直放」。
+///
+/// 没有标记的概念时，任何 `.dat`（包括续写一半的）都会在启动扫描时被当成
+/// 完整缓存伺服出去，表现为「播放到一半直接跳到下一首」。
+pub(crate) fn marker_path(path: &std::path::Path, ext: &str) -> PathBuf {
+	path.with_extension(ext)
+}
+
+/// 删除缓存文件及其标记。
+pub(crate) fn remove_cache_files(path: &std::path::Path) {
+	let _ = std::fs::remove_file(path);
+	let _ = std::fs::remove_file(marker_path(path, "done"));
+	let _ = std::fs::remove_file(marker_path(path, "part"));
+}
+
+/// 该缓存文件是否“确认完整下载过”（`.done` 存在）。
+pub(crate) fn is_verified(path: &std::path::Path) -> bool {
+	marker_path(path, "done").exists()
+}
+
 /// 等待最小缓冲就绪（在 commands.rs 的 async 上下文中用 tokio::time::sleep 轮询）
 pub fn is_buffer_ready(state: &StreamingTempFileState) -> bool {
 	// Wait for post-download QMC check/decryption if pending
@@ -425,7 +453,7 @@ pub fn clear_all() {
 	if let Some(mgr) = STREAM_CACHE.get() {
 		if let Ok(mut mgr) = mgr.lock() {
 			for (_, entry) in mgr.entries.drain() {
-				let _ = std::fs::remove_file(&entry.path);
+				remove_cache_files(&entry.path);
 			}
 			mgr.current_size = 0;
 		}
@@ -441,6 +469,9 @@ pub struct UrlCacheStatus {
 	pub exists: bool,
 	pub complete: bool,
 	pub failed: bool,
+	/// 是否“确认完整写过一遍”（`.done` 标记在场）。
+	/// 跨冷启动按歌曲身份直放要求此值为真：只剩半截的 `.dat` 不能免取址播放。
+	pub verified: bool,
 	pub downloaded_bytes: u64,
 	pub total_bytes: Option<u64>,
 }
@@ -457,6 +488,7 @@ pub fn url_cache_status(url: &str) -> UrlCacheStatus {
 				exists: true,
 				complete,
 				failed,
+				verified: complete && is_verified(&entry.path),
 				downloaded_bytes: entry.downloaded_bytes.load(Ordering::Relaxed),
 				// 完成用实际文件大小；下载中用响应头 Content-Length
 				total_bytes: if complete {
@@ -470,6 +502,7 @@ pub fn url_cache_status(url: &str) -> UrlCacheStatus {
 			exists: false,
 			complete: false,
 			failed: false,
+			verified: false,
 			downloaded_bytes: 0,
 			total_bytes: None,
 		},

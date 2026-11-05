@@ -2056,6 +2056,10 @@ pub fn stream_cache_url_status(url: String) -> String {
         "exists": s.exists,
         "complete": s.complete,
         "failed": s.failed,
+        // 是否确认完整写过一遍（.done 标记）。跨冷启动按歌曲身份免取址直放
+        // 要求此值为真，半截文件（.part 残留）不算。
+        "verified": s.verified,
+        "downloaded_bytes": s.downloaded_bytes,
         "downloaded": s.downloaded_bytes,
         "total": s.total_bytes,
     })

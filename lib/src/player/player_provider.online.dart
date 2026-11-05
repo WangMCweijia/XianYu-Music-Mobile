@@ -196,12 +196,109 @@ extension PlayerNotifierOnline on PlayerNotifier {
     }
   }
 
+  /// 「歌曲身份（插件+曲目 id）+ 音质」——跨冷启动保持稳定的索引键。
+  String _onlineCacheIdentity(Map<String, dynamic> songJson, QueueItem item) {
+    final base = _songProbeKey(songJson, item);
+    final artist = item.artist.trim();
+    return artist.isEmpty ? base : '$base|$artist';
+  }
+
+  /// 记录本次起播所用的直链，供下次冷启动免取址直放。
+  void _bindOnlineCacheAlias(QueueItem item, String? quality, String url) {
+    if (quality == null || quality.isEmpty || url.isEmpty) return;
+    final json = item.onlineSongJson;
+    if (json == null || json.isEmpty) return;
+    try {
+      final songJson = jsonDecode(json) as Map<String, dynamic>;
+      final key = '${_onlineCacheIdentity(songJson, item)}|$quality';
+      unawaited(OnlineCacheAlias.instance.bind(key, url));
+    } catch (e) {
+      AppLog.debug('play', '在线缓存索引绑定失败: $e');
+    }
+  }
+
+  /// 该直链的磁盘缓存是否“确认完整写过一遍”（`.done` 标记）。
+  /// 只有这种条目才允许免取址直放：半截文件播出来会中途断掉。
+  Future<bool> _streamCachePlayable(String url) async {
+    try {
+      final raw = await streamCacheUrlStatus(url: url);
+      final m = jsonDecode(raw) as Map<String, dynamic>;
+      return m['exists'] == true &&
+          m['complete'] == true &&
+          m['verified'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 用上次解析到的直链直接起播（缓存完整时）。命中并起播成功返回 true。
+  ///
+  /// 冷启动重播同一首在线歌要等，主要不是硬盘上没有数据，而是：
+  /// ① 插件直链带 vkey/token，重启后是另一条 URL，按 URL 哈希的缓存命不中；
+  /// ② 必须先把地址解析出来（联网 1~3s），命中缓存也得等这一步。
+  /// 这里把 ① 换成稳定的歌曲身份索引，命中就直接跳过 ②。
+  Future<bool> _tryCachedOnlineStart(
+    QueueItem item,
+    Map<String, dynamic> songJson,
+    List<String> candidates, {
+    required String probeKey,
+    required double startAtSecs,
+    required bool startPlayback,
+  }) async {
+    final base = _onlineCacheIdentity(songJson, item);
+    for (final q in candidates) {
+      String? url;
+      try {
+        url = await OnlineCacheAlias.instance.lookup('$base|$q');
+      } catch (_) {
+        url = null;
+      }
+      if (url == null || url.isEmpty) continue;
+      if (!await _streamCachePlayable(url)) {
+        AppLog.debug('play', '[cachedStart] $q 有索引但缓存不完整，走取址');
+        continue;
+      }
+      final sw = Stopwatch()..start();
+      try {
+        await _startOnlineUrl(
+          url,
+          item: item,
+          quality: q,
+          startAtSecs: startAtSecs,
+          isPlaying: startPlayback,
+        );
+        state = state.copyWith(resolving: false, currentQuality: q);
+        // 与正常取址路径保持一致：登记探测器（音质菜单用），先把已知这一档标出来
+        final probe = onlineQualityProbeRegistry.ensure(
+          probeKey,
+          _buildResolveCallback(songJson, item),
+        );
+        _activeProbeKey = probeKey;
+        onlineQualityProbeRegistry.seed(probeKey, q, url);
+        _refreshQualityMenuState(probe);
+        unawaited(_persistSession());
+        AppLog.info(
+          'play',
+          '[cachedStart] 命中本地缓存 q=$q 起播 ${sw.elapsedMilliseconds}ms '
+              'key=$base',
+        );
+        unawaited(_prewarmOnlineSizes(item));
+        _probeMvsAround(item);
+        return true;
+      } catch (e) {
+        AppLog.warn('play', '[cachedStart] 缓存直放失败，回退网络取址: $e');
+      }
+    }
+    return false;
+  }
+
   Future<void> _startOnlineUrl(
     String url, {
     Map<String, String>? headers,
     required QueueItem item,
     String? ekey,
     String? cek,
+    String? quality,
     double startAtSecs = 0,
     bool isPlaying = true,
     bool castPlayback = false,
@@ -227,6 +324,9 @@ extension PlayerNotifierOnline on PlayerNotifier {
           isCenc: true, startAtSecs: startAtSecs, isPlaying: isPlaying);
       return;
     }
+    // 记住「这首（音质）上次用的是哪条直链」，供下次冷启动免取址直放。
+    // 加密音源（ekey/cek）不参与：磁盘上留的是密文，免取址播放会解不出来。
+    _bindOnlineCacheAlias(item, quality, clean);
     LastAudioSource.recordUrl(clean, h);
     await AudioProxyServer.instance.ensureStarted();
     AudioHeadCache.instance.registerHeaders(clean, h);

@@ -21,7 +21,7 @@ pub fn start_streaming_download(
 	if let Some(entry) = mgr.entries.get(&hash) {
 		if entry.download_failed.load(Ordering::Relaxed) {
 			if let Some(failed) = mgr.entries.remove(&hash) {
-				let _ = std::fs::remove_file(&failed.path);
+				remove_cache_files(&failed.path);
 				mgr.current_size = mgr.current_size.saturating_sub(failed.size);
 			}
 		}
@@ -38,7 +38,7 @@ pub fn start_streaming_download(
 				if let Err(_) = decrypt_cenc_file(&entry.path, cek_str) {
 					let failed = mgr.entries.remove(&hash);
 					if let Some(failed) = failed {
-						let _ = std::fs::remove_file(&failed.path);
+						remove_cache_files(&failed.path);
 						mgr.current_size = mgr.current_size.saturating_sub(failed.size);
 					}
 				}
@@ -90,6 +90,14 @@ pub fn start_streaming_download(
 		.open(&temp_path)
 		.map_err(|e| format!("创建缓存文件失败: {}", e))?;
 	drop(file);
+
+	// 写入中标记：进程被杀 / 系统回收后残留，下次启动扫描据此判定文件残缺并丢弃
+	// （没有续传实现，残缺文件被当成完整缓存播出去会「播一半就断」）。
+	let _ = OpenOptions::new()
+		.write(true)
+		.create(true)
+		.truncate(true)
+		.open(marker_path(&temp_path, "part"));
 
 	let downloaded_bytes = Arc::new(AtomicU64::new(0));
 	let download_complete = Arc::new(AtomicBool::new(false));
@@ -614,6 +622,14 @@ async fn download_thread(
 		post_check_pending.store(false, Ordering::Relaxed);
 	}
 
+	// 完整写完的标记先于 complete 置位，保证「complete 为真 ⇒ .done 在场」，
+	// 上层据此判定该文件可以免取址直放。
+	let _ = OpenOptions::new()
+		.write(true)
+		.create(true)
+		.truncate(true)
+		.open(marker_path(&path, "done"));
+	let _ = std::fs::remove_file(marker_path(&path, "part"));
 	download_complete.store(true, Ordering::Relaxed);
 
 	// 更新缓存大小，并在完成后立即触发淘汰：否则多首歌下载完成而

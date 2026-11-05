@@ -29,6 +29,7 @@ import '../../src/lyrics/lyric_font.dart';
 import '../../src/lyrics/lyric_model.dart';
 import '../../src/lyrics/lyrics_repository.dart';
 import '../../src/player/online_quality_probe.dart';
+import '../../src/widgets/song_list_scroll_fabs.dart';
 import '../../src/player/player_provider.dart';
 import '../../src/player/sleep_timer.dart';
 import '../../src/player/sleep_timer_sheet.dart';

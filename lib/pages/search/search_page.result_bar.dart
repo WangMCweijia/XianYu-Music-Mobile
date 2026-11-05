@@ -60,10 +60,9 @@ extension _SearchResultPageSources on _SearchResultPageState {
               lxKey: lx.first));
         } else {
           for (final key in lx) {
-            final rawName = _lxSourceNames[key] ?? key;
             items.add(_SourceItem(
                 id: '${p.id}__$key',
-                name: showReal ? resolveRealSourceName(rawName) : rawName,
+                name: lxPlatformDisplayName(key, real: showReal),
                 type: _SourceType.lx,
                 plugin: p,
                 lxKey: key));

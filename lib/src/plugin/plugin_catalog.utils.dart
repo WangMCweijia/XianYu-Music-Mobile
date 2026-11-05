@@ -374,17 +374,29 @@ String? lxPlatformCodeOf(PluginSource source) {
 
 /// LX 内部平台显示名（榜单页与搜索页共用）。
 /// tr() 每次调用求值，支持运行时切换语言。
-Map<String, String> lxPlatformDisplayNames() => <String, String>{
-      'kw': tr('小蜗音乐'),
-      'kg': tr('小枸音乐'),
-      'tx': tr('小秋音乐'),
-      'wy': tr('小芸音乐'),
-      'mg': tr('小蜜音乐'),
-      'qs': tr('汽水音乐'),
-    };
+/// [real] 为 true 时返回平台真名（插件设置里「显示真实音源名」开启），
+/// 假名走「小X」别名规避审查，真名走各平台官方叫法。
+Map<String, String> lxPlatformDisplayNames({bool real = false}) =>
+    real
+        ? <String, String>{
+            'kw': tr('酷我音乐'),
+            'kg': tr('酷狗音乐'),
+            'tx': tr('QQ音乐'),
+            'wy': tr('网易云音乐'),
+            'mg': tr('咪咕音乐'),
+            'qs': tr('汽水音乐'),
+          }
+        : <String, String>{
+            'kw': tr('小蜗音乐'),
+            'kg': tr('小枸音乐'),
+            'tx': tr('小秋音乐'),
+            'wy': tr('小芸音乐'),
+            'mg': tr('小蜜音乐'),
+            'qs': tr('汽水音乐'),
+          };
 
-String lxPlatformDisplayName(String key) =>
-    lxPlatformDisplayNames()[key] ?? key;
+String lxPlatformDisplayName(String key, {bool real = false}) =>
+    lxPlatformDisplayNames(real: real)[key] ?? key;
 
 String? _decodeLxCoverResult(String raw) {
   if (raw.isEmpty || raw == 'null') return null;

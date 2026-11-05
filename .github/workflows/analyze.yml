@@ -24,3 +24,8 @@ jobs:
         run: |
           set -o pipefail
           flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | tee /tmp/analyze.log | tail -80
+
+      # 列表定位走「读实测布局」的实现，必须用真实渲染树验证落点，
+      # 纯静态分析覆盖不到
+      - name: Locate widget test
+        run: flutter test test/list_locate_test.dart

@@ -139,13 +139,31 @@ class PluginCommentService {
     if (!musicItem.containsKey('artist') && songInfo.containsKey('singer')) {
       musicItem['artist'] = songInfo['singer'];
     }
-    if (!musicItem.containsKey('id') &&
-        ((musicItem['id'] as dynamic)?.toString() ?? '').isEmpty &&
-        songInfo.containsKey('songmid')) {
-      musicItem['id'] = songInfo['songmid'];
-    }
-    if (!musicItem.containsKey('songmid') && songInfo.containsKey('songmid')) {
-      musicItem['songmid'] = songInfo['songmid'];
+    // rawData 是 LX 原始条目（songmid/hash/copyright_id 等），缺少插件层
+    // 归一化出来的 camelCase 字段；平台评论接口两种写法都可能用到，这里
+    // 把顶层字段补进缺失位置，避免「有 id 却取不到」。
+    const carryOver = [
+      'id',
+      'songmid',
+      'hash',
+      'strMediaMid',
+      'songId',
+      'albumId',
+      'albumMid',
+      'copyrightId',
+      'source',
+    ];
+    for (final k in carryOver) {
+      final v = songInfo[k];
+      if (v == null) continue;
+      if (v is String && v.isEmpty) continue;
+      final cur = musicItem[k];
+      if (musicItem.containsKey(k) &&
+          cur != null &&
+          cur.toString().trim().isNotEmpty) {
+        continue;
+      }
+      musicItem[k] = v;
     }
     return musicItem;
   }

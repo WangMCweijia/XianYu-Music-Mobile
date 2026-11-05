@@ -110,4 +110,40 @@ void main() {
 
     expect(controller.offset, closeTo(offsets[40], 1.0));
   });
+
+  /// 线上原现场：本地曲库（可拖拽列表 + 排序条浮层），第 52 首（index 51）
+  /// 点定位后顶部显示第 55 首。这里用真机同款 ReorderableListView，断言
+  /// 目标行最终**在屏幕上的位置**——不是偏移量，而是用户真正看到的那一行。
+  testWidgets('可拖拽列表：定位后目标行贴在浮层下方', (tester) async {
+    const padTop = 206.0; // 顶栏 + 排序条占位
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: ReorderableListView.builder(
+          scrollController: controller,
+          padding: const EdgeInsets.only(top: padTop, bottom: 40),
+          itemExtent: rowExtent,
+          buildDefaultDragHandles: false,
+          itemCount: 80,
+          onReorderItem: (oldIndex, newIndex) {},
+          itemBuilder: (c, i) => SizedBox(
+            key: ValueKey('r$i'),
+            height: rowExtent,
+            child: Text('row $i'),
+          ),
+        ),
+      ),
+    ));
+    await tester.pump();
+
+    await runLocate(
+      tester,
+      revealListRow(controller, 51,
+          rowTopOf: (i) => padTop + i * rowExtent, alignTop: padTop),
+    );
+
+    expect(tester.getTopLeft(find.text('row 51')).dy, closeTo(padTop, 1.0));
+    expect(controller.offset, closeTo(51 * rowExtent, 1.0));
+  });
 }

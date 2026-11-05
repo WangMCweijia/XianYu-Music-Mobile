@@ -24,6 +24,18 @@ Color appSurfaceBg(BuildContext context) {
   return dark ? const Color(0xFF222222) : const Color(0xFFF4F4F6);
 }
 
+/// 贴在滚动内容之上的浮层（排序条、列表工具条）底色。
+///
+/// 页面 Scaffold 恒透明（底色由根层 ColoredBox(appSurfaceBg) + 壁纸层自绘），
+/// 所以 `Theme.of(context).scaffoldBackgroundColor` 也是 `Colors.transparent`
+/// ——浮层照抄它就会变成「完全透明」，列表内容从浮层底下直接透出来。
+/// 这里统一取真实的页面底：普通模式取 appSurfaceBg，壁纸模式取壁纸块填充
+/// （与列表卡片同源），两种模式下浮层都有一层与页面一致的底。
+Color appOverlayBarBg(BuildContext context, WidgetRef ref) =>
+    ref.watch(wallpaperActiveProvider)
+    ? wallpaperBlockFill(context, ref)
+    : appSurfaceBg(context);
+
 Color appCardColor(BuildContext context) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   return dark ? const Color(0xFF303030) : const Color(0xFFFFFFFF);

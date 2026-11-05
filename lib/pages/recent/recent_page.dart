@@ -598,7 +598,8 @@ class _RecentListState extends ConsumerState<_RecentList> {
   Widget _buildSortBar(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return ColoredBox(
-      color: Theme.of(context).scaffoldBackgroundColor,
+      // 全局 scaffold 背景透明，浮层必须取真实页面底
+      color: appOverlayBarBg(context, ref),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
         child: Align(

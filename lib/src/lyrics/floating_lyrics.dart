@@ -72,19 +72,33 @@ class FloatingLyricsController with WidgetsBindingObserver {
   // ---- 设置变化 ----
 
   void _onSettingsChanged(AppSettings s) {
-    final enabled = s.floatingLyricsEnabled && !_mvActive;
-    if (enabled && !_enabled) {
-      _enabled = true;
-      _pushSettings(s);
-      _pushLyrics(s);
-      _pushPlayback(s);
-      _show();
-    } else if (!enabled && _enabled) {
-      _enabled = false;
-      _hide();
-    } else if (enabled) {
-      _pushSettings(s);
-      if (s.floatingLyricsLocked) _setLocked(true);
+    _syncService(s);
+    if (!_enabled) return;
+    _pushSettings(s);
+    if (s.floatingLyricsLocked) _setLocked(true);
+  }
+
+  /// 该不该让悬浮窗服务存在：开关开着、没在看 MV、并且确实有歌可放。
+  ///
+  /// 冷启动会恢复上次的曲目但没有播放，此时若只按开关判断，就会凭空冒出
+  /// 一个空面板（用户点它一下就"消失"，其实是收起了面板）。
+  ///
+  /// 暂停与否**不在**这里判断：「暂停时隐藏」由原生按实时播放态收放窗口，
+  /// 若在这里反复 start/stop 服务，后台起播（通知栏/耳机）时系统会拦截
+  /// 后台 startService，桌面歌词就再也上不来了。
+  bool _serviceWanted(AppSettings s) {
+    if (!s.floatingLyricsEnabled || _mvActive) return false;
+    return _container.read(playerProvider).current != null;
+  }
+
+  void _syncService(AppSettings s) {
+    final want = _serviceWanted(s);
+    if (want == _enabled) return;
+    _enabled = want;
+    if (want) {
+      unawaited(_show());
+    } else {
+      unawaited(_hide());
     }
   }
 
@@ -94,21 +108,15 @@ class FloatingLyricsController with WidgetsBindingObserver {
     if (_mvActive == active) return;
     _mvActive = active;
     final s = _container.read(settingsProvider).valueOrNull;
-    final want = (s?.floatingLyricsEnabled ?? false) && !active;
-    if (want == _enabled) return;
-    _enabled = want;
-    if (want) {
-      _show();
-    } else {
-      _hide();
-    }
+    if (s == null) return;
+    _syncService(s);
   }
 
   // ---- 播放状态变化 ----
 
   void _onPlaybackChanged(PlaybackState state) {
     final s = _container.read(settingsProvider).valueOrNull;
-    if (s == null || !s.floatingLyricsEnabled || _mvActive) return;
+    if (s == null) return;
 
     final item = state.current;
     final key = item == null
@@ -119,6 +127,10 @@ class FloatingLyricsController with WidgetsBindingObserver {
       _lyrics = const [];
       _fetchLyrics(item);
     }
+    // 换歌/清队列会改变「该不该有窗」（清空队列则收窗）；暂停的收放
+    // 交给原生按 hideWhenPaused 处理，不重启服务
+    _syncService(s);
+    if (!_enabled) return;
     _pushPlayback(s);
   }
 
@@ -141,11 +153,13 @@ class FloatingLyricsController with WidgetsBindingObserver {
     if (!granted) return;
     await _channel.invokeMethod('show');
     final s = _container.read(settingsProvider).valueOrNull;
-    if (s != null) {
-      _pushSettings(s);
-      _pushLyrics(s);
-      _pushPlayback(s);
-    }
+    if (s == null) return;
+    // 原生刚建好窗口，还没收到播放态；它把「未收到播放态」当作不可见，
+    // 所以这里不会先闪一个空面板。下面按 设置 → 歌词 → 播放态补齐，
+    // 播放态必须强制推（按去重会跳过，原生就一直停在不显示）。
+    _pushSettings(s);
+    _pushLyrics(s);
+    _pushPlayback(s, force: true);
   }
 
   Future<void> _hide() async {
@@ -184,11 +198,13 @@ class FloatingLyricsController with WidgetsBindingObserver {
     _channel.invokeMethod('setLyrics', {'json': json});
   }
 
-  void _pushPlayback(AppSettings s) {
+  void _pushPlayback(AppSettings s, {bool force = false}) {
     final state = _container.read(playerProvider);
     final posMs = (state.position * 1000).round();
     final playing = state.isPlaying;
-    if (posMs == _lastPushedPosMs && playing == _lastPushedPlaying) return;
+    if (!force && posMs == _lastPushedPosMs && playing == _lastPushedPlaying) {
+      return;
+    }
     _lastPushedPosMs = posMs;
     _lastPushedPlaying = playing;
     _channel.invokeMethod('setPlayback', {

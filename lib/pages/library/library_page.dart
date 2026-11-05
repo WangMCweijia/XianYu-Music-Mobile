@@ -964,7 +964,9 @@ class _AllSongsTabState extends ConsumerState<_AllSongsTab> {
                 left: 0,
                 right: 0,
                 child: ColoredBox(
-                  color: Theme.of(context).scaffoldBackgroundColor,
+                  // 不能用 Theme.scaffoldBackgroundColor：全局透明（见
+                  // appOverlayBarBg 注释），会把这一行做成全透明
+                  color: appOverlayBarBg(context, ref),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 3, 12, 3),
                     child: Row(

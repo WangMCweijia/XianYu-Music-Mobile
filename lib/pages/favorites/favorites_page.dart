@@ -743,6 +743,9 @@ class _SongsTabState extends ConsumerState<_SongsTab> {
                 scrollController: _controller,
                 padding: EdgeInsets.only(
                     top: widget.topInset + toolPad, bottom: bottomPad),
+                // 与 rowTopOf 的 i*rowExtent 等高假设对齐（缺此项时行高按
+                // 内容实测，靠后的曲目定位会累积偏移）
+                itemExtent: rowExtent,
                 buildDefaultDragHandles: false,
                 proxyDecorator: (child, index, animation) =>
                     Material(type: MaterialType.transparency, child: child),

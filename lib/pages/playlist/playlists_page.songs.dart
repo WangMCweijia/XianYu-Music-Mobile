@@ -721,6 +721,10 @@ class _PlaylistSongsState extends ConsumerState<_PlaylistSongs> {
               ReorderableListView.builder(
                 scrollController: _controller,
                 padding: EdgeInsets.only(bottom: bottomPad),
+                // 必须与 rowTopOf 的等高假设（rowExtent）绑定：不声明
+                // itemExtent 时行高由内容实测决定，定位用的 i*rowExtent
+                // 会随曲目序号累积误差（第 51 首能偏出两行）
+                itemExtent: rowExtent,
                 buildDefaultDragHandles: false,
                 proxyDecorator: (child, index, animation) =>
                     Material(type: MaterialType.transparency, child: child),

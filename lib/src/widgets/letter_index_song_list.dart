@@ -222,6 +222,11 @@ class _LetterIndexSongListState extends ConsumerState<LetterIndexSongList> {
             scrollCacheExtent: ScrollCacheExtent.pixels(500),
             addAutomaticKeepAlives: false,
             itemCount: total,
+            // 逐项固定高度：_rowTopOf/_jumpToLetter 都按「组头 26 + n×行高」
+            // 换算像素，列表不给固定 extent 时行高由内容实测，序号越大
+            // 换算误差越大（定位当前播放/跳字母都会偏行）
+            itemExtentBuilder: (i, _) =>
+                flatGroup[i] >= 0 ? _headerExtent : _rowExtent,
             itemBuilder: (context, i) {
               final gIdx = flatGroup[i];
               if (gIdx >= 0) {

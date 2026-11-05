@@ -2,7 +2,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../plugin/plugin_catalog.dart';
 import '../plugin/plugin_models.dart';
+import '../core/settings.dart';
 import '../plugin/plugin_provider.dart';
+import '../widgets/source_tag.dart';
 
 class TopListsPreview {
   final bool checking;
@@ -86,20 +88,23 @@ class TopListsPreviewNotifier extends StateNotifier<TopListsPreview> {
       }
 
       // 基础源先排序，LX 源再按内部平台拆分（与搜索结果页同款）
+      // 「显示真实音源名」开启时把「小X音乐」还原为平台真名
+      final showReal = _ref.read(settingsProvider).valueOrNull?.showRealSourceName ?? false;
+      String resolveName(String raw) => showReal ? resolveRealSourceName(raw) : raw;
       const lxKeys = {'wy', 'kg', 'kw', 'tx'};
       final ordered = <({PluginSource plugin, String? lxKey, String name})>[];
       for (final p in sortPluginSources(basePlugins)) {
         if (p.format != PluginFormat.lx) {
-          ordered.add((plugin: p, lxKey: null, name: p.name));
+          ordered.add((plugin: p, lxKey: null, name: resolveName(p.name)));
           continue;
         }
         final keys = p.sources.where(lxKeys.contains).toSet();
         if (keys.length <= 1) {
           final key = keys.isEmpty ? null : keys.first;
-          ordered.add((plugin: p, lxKey: key, name: p.name));
+          ordered.add((plugin: p, lxKey: key, name: resolveName(p.name)));
         } else {
           for (final key in keys) {
-            ordered.add((plugin: p, lxKey: key, name: lxPlatformDisplayName(key)));
+            ordered.add((plugin: p, lxKey: key, name: lxPlatformDisplayName(key, real: showReal)));
           }
         }
       }

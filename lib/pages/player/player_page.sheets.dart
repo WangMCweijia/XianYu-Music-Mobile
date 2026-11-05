@@ -682,6 +682,21 @@ class _QueueSheet extends ConsumerStatefulWidget {
 }
 
 class _QueueSheetState extends ConsumerState<_QueueSheet> {
+  final ScrollController _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// 定位到当前播放项：队列面板原本只能手动找，长队列（80+ 首）里几乎
+  /// 找不到正在放的那首。revealListRow 走实测布局，不依赖行高估算。
+  Future<void> _locateCurrent(int index) async {
+    if (index < 0) return;
+    await revealListRow(_scroll, index);
+  }
+
   @override
   Widget build(BuildContext context) {
     final player = ref.watch(playerProvider);
@@ -717,6 +732,18 @@ class _QueueSheetState extends ConsumerState<_QueueSheet> {
                 style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
               ),
               const Spacer(),
+              // 长队列里定位正在播放的那首（列表可能已滚到别处）
+              PressableScale(pressScale: 0.88, swing: true, child: IconButton(
+                icon: Icon(
+                  Icons.my_location_rounded,
+                  size: 20,
+                  color: scheme.onSurfaceVariant,
+                ),
+                tooltip: tr('定位当前播放歌曲'),
+                onPressed: queue.isEmpty || currentIndex < 0
+                    ? null
+                    : () => unawaited(_locateCurrent(currentIndex)),
+              )),
               PressableScale(pressScale: 0.88, swing: true, child: IconButton(
                 icon: Icon(
                   Icons.delete_outline,
@@ -748,6 +775,7 @@ class _QueueSheetState extends ConsumerState<_QueueSheet> {
         else
           Flexible(
             child: ReorderableListView.builder(
+              scrollController: _scroll,
               shrinkWrap: true,
               buildDefaultDragHandles: false,
               itemCount: queue.length,

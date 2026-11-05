@@ -13,6 +13,7 @@ import '../../src/widgets/glass_appbar.dart';
 import '../../src/widgets/floating_search_bar.dart';
 import '../../src/widgets/online_cover.dart';
 import '../../src/widgets/press_scale.dart';
+import '../../src/widgets/source_tag.dart';
 import '../../src/widgets/stagger_in.dart';
 import 'online_detail_page.dart';
 import '../../src/i18n/i18n.dart';
@@ -85,10 +86,16 @@ class _TopListsPageState extends ConsumerState<TopListsPage>
     final sources =
         sortPluginSources(ref.read(pluginManagerProvider).sources.where((s) => s.enabled).toList());
     final catalog = PluginCatalogService(engine, sources);
+    // 与「显示真实音源名」设置一致：多平台拆分出来的「小X音乐」需还原为
+    // 平台真名（酷狗/QQ/网易云…），否则设置对该页不生效
+    final showReal =
+        ref.read(settingsProvider).valueOrNull?.showRealSourceName ?? false;
+    String resolveName(String raw) =>
+        showReal ? resolveRealSourceName(raw) : raw;
     final supported = <_TopSource>[];
     for (final s in catalog.musicFreeSources) {
       if (await catalog.supportsTopLists(s)) {
-        supported.add(_TopSource(s, null, s.name));
+        supported.add(_TopSource(s, null, resolveName(s.name)));
       }
     }
     // 榜单数据由 lx_toplist 元数据兜底模块保证能力，
@@ -98,10 +105,10 @@ class _TopListsPageState extends ConsumerState<TopListsPage>
       final keys = s.sources.where(lxKeys.contains).toSet();
       if (keys.length <= 1) {
         final key = keys.isEmpty ? null : keys.first;
-        supported.add(_TopSource(s, key, s.name));
+        supported.add(_TopSource(s, key, resolveName(s.name)));
       } else {
         for (final key in keys) {
-          supported.add(_TopSource(s, key, lxPlatformDisplayName(key)));
+          supported.add(_TopSource(s, key, lxPlatformDisplayName(key, real: showReal)));
         }
       }
     }

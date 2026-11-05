@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../player/player_provider.dart';
@@ -15,6 +16,108 @@ import 'press_scale.dart';
 /// 日志用 path 尾段（cloud:// 等长 path 全打会刷屏）。
 String _tail24(String s) =>
     s.length <= 24 ? s : '…${s.substring(s.length - 24)}';
+
+/// 向下搜索第一个多子项 sliver（List/SliverList/ReorderableList 的
+/// render object 都是它的子类）。
+RenderSliverMultiBoxAdaptor? _findMultiBoxSliver(RenderObject ro) {
+  if (ro is RenderSliverMultiBoxAdaptor) return ro;
+  RenderSliverMultiBoxAdaptor? found;
+  ro.visitChildren((child) {
+    found ??= _findMultiBoxSliver(child);
+  });
+  return found;
+}
+
+/// 读出当前已挂载行的 (index, 行顶相对 sliver 起点偏移)。
+///
+/// 定位不能只依赖调用方给的「i × 行高」：行高由内容实测、列表顶部内边距
+/// 随折叠搜索栏变化、字母索引列表还混着组头，任何一项与假设不符都会让
+/// 靠后的曲目越滚越偏。这里直接读 RenderSliverMultiBoxAdaptor 的真实
+/// 布局结果，拿到的是像素级真值。
+List<(int, double)> _mountedRowTops(ScrollController controller) {
+  final rows = <(int, double)>[];
+  try {
+    if (!controller.hasClients) return rows;
+    final ctx = controller.position.context;
+    if (ctx is! ScrollableState) return rows;
+    final ro = ctx.context.findRenderObject();
+    if (ro == null) return rows;
+    final sliver = _findMultiBoxSliver(ro);
+    if (sliver == null) return rows;
+    for (var child = sliver.firstChild;
+        child != null;
+        child = sliver.childAfter(child)) {
+      final pd = child.parentData;
+      if (pd is SliverMultiBoxAdaptorParentData &&
+          pd.index != null &&
+          pd.layoutOffset != null) {
+        rows.add((pd.index!, pd.layoutOffset!));
+      }
+    }
+  } catch (_) {
+    // 布局树结构变动中（拖拽/重建）取不到就回退到估算
+  }
+  return rows;
+}
+
+/// 目标行在内容坐标里的顶部偏移。
+/// [rows] 是已挂载行的真值；目标行可见时直接命中，不可见（差异较大、
+/// 已滑出构建窗口）时用上下相邻两行反推真实行高再外插。
+double? _rowTopFromRows(
+    List<(int, double)> rows, int index, double baseTop) {
+  if (rows.isEmpty) return null;
+  for (final r in rows) {
+    if (r.$1 == index) return baseTop + r.$2;
+  }
+  var i = 0;
+  while (i < rows.length && rows[i].$1 < index) {
+    i++;
+  }
+  final upper = i > 0 ? rows[i - 1] : rows[i];
+  final lower = i < rows.length ? rows[i] : rows[i - 1];
+  if (upper.$1 == lower.$1) return null;
+  final h = (lower.$2 - upper.$2) / (lower.$1 - upper.$1);
+  if (!h.isFinite || h <= 0) return null;
+  return baseTop + upper.$2 + (index - upper.$1) * h;
+}
+
+/// 把虚拟列表中第 [index] 行对齐到视口顶部。
+///
+/// 不依赖调用方给的行高假设：[rowTopOf] 只用于首次落点的粗估，真正落位
+/// 由已挂载行的实测 layoutOffset 决定；目标行尚未构建时用相邻行反推
+/// 行高外插，跳一次后再复测收敛。列表无行高信息（如播放队列）时传 null
+/// 即可，纯靠实测外插。
+Future<void> revealListRow(
+  ScrollController controller,
+  int index, {
+  double Function(int index)? rowTopOf,
+  Duration duration = const Duration(milliseconds: 320),
+}) async {
+  if (!controller.hasClients || index < 0) return;
+  final baseTop = rowTopOf?.call(0) ?? 0.0;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    if (!controller.hasClients) return;
+    final rows = _mountedRowTops(controller);
+    final exact = rows.any((r) => r.$1 == index);
+    final measured = _rowTopFromRows(rows, index, baseTop);
+    final estimate = rowTopOf?.call(index);
+    final basis = measured ?? estimate;
+    if (basis == null) return;
+    final target = basis.clamp(0.0, controller.position.maxScrollExtent);
+    final delta = target - controller.position.pixels;
+    AppLog.debug(
+        'locate',
+        'reveal idx=$index attempt=$attempt rows=${rows.length} '
+        'measured=${measured?.toStringAsFixed(0) ?? '-'} '
+        'estimate=${estimate?.toStringAsFixed(0) ?? '-'} '
+        'target=${target.toStringAsFixed(0)} '
+        'delta=${delta.toStringAsFixed(0)}');
+    if (delta.abs() <= 0.5) return;
+    await controller.animateTo(target, duration: duration, curve: Curves.easeOutCubic);
+    // 精确命中目标行：这一跳的落点就是真值，收敛；外插估算则需要再复测
+    if (exact) return;
+  }
+}
 
 class SongListScrollFabs extends ConsumerWidget {
   const SongListScrollFabs({
@@ -84,23 +187,13 @@ class SongListScrollFabs extends ConsumerWidget {
               curve: Curves.easeOutCubic,
             );
 
-        void onLocate() {
+        Future<void> onLocate() async {
           AppLog.debug(
               'locate',
               'tap cur=${_tail24(current?.path ?? '')} hasClients=$hasClients '
               'idx=$currentIndex offset=${hasClients ? offset.toStringAsFixed(0) : '-'}');
           if (!hasClients || currentIndex < 0) return;
-          final target = rowTopOf(currentIndex)
-              .clamp(0.0, controller.position.maxScrollExtent);
-          AppLog.debug(
-              'locate',
-              'tap animate target=${target.toStringAsFixed(0)} '
-              'max=${controller.position.maxScrollExtent.toStringAsFixed(0)}');
-          controller.animateTo(
-            target,
-            duration: const Duration(milliseconds: 360),
-            curve: Curves.easeOutCubic,
-          );
+          await revealListRow(controller, currentIndex, rowTopOf: rowTopOf);
         }
 
         return Positioned(
@@ -131,7 +224,7 @@ class SongListScrollFabs extends ConsumerWidget {
                   wallpaper: wallpaper,
                   icon: Icons.my_location_rounded,
                   tooltip: tr('定位当前播放歌曲'),
-                  onTap: onLocate,
+                  onTap: () => unawaited(onLocate()),
                 ),
               ),
             ],

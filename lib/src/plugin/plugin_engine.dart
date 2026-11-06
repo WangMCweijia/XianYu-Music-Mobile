@@ -79,18 +79,19 @@ class PluginEngine {
 
   // ==================== 脚本格式检测 / 头信息解析 ====================
 
+  /// 判定顺序：先认 LX 的强特征，再认 MusicFree。
+  ///
+  /// 反过来（先看 module.exports）会踩坑：LX 源里只要残留一句
+  /// `if (typeof module !== 'undefined' && module.exports)…` 的死代码，
+  /// 就会被判成 MusicFree，随后 loadMusicFree 必败，报「插件加载失败」。
+  /// 主源 v1.1.1 的导入失败就是这么来的。
+  ///
+  /// LX 特征（globalThis.lx / lx.on( / EVENT_NAMES.request）是运行期引用，
+  /// 纯 MusicFree 插件不会有；两种特征同时出现时按 LX 走——
+  /// 即便真判错，导入侧还有「加载失败就换另一种格式重试」的兜底。
   bool isLxPluginScript(String script) {
     final trimmed = script.trim();
 
-    final hasMusicFreeExport = RegExp(r'\bmodule\.exports\s*[.=]').hasMatch(trimmed) ||
-        RegExp(r'\bexports\s*\.\s*default\s*=').hasMatch(trimmed);
-    final hasMusicFreePlatform = RegExp(r"""\bplatform\s*[=:]\s*['"]""").hasMatch(trimmed);
-    final hasMusicFreeSearch = RegExp(r"""\bsearch\s*[=:]\s*function|\.search\s*=\s*(async\s+)?\(""")
-        .hasMatch(trimmed);
-
-    if (hasMusicFreeExport || (hasMusicFreePlatform && hasMusicFreeSearch)) {
-      return false;
-    }
     if (RegExp(r'\blx\s*\.\s*(on|send)\s*\(').hasMatch(trimmed)) return true;
     if (RegExp(r'EVENT_NAMES\s*\.\s*request').hasMatch(trimmed)) return true;
     if (RegExp(r"""globalThis\s*\[\s*['"]lx['"]\s*]""").hasMatch(trimmed)) return true;
@@ -108,6 +109,11 @@ class PluginEngine {
             .hasMatch(trimmed)) {
       return true;
     }
+
+    // 到这里再判 MusicFree：module.exports / exports.default，或
+    // 「platform: '...'」+「search = function」这组结构特征。
+    // 这两类特征不再需要单独 return——不是 LX 就当 MusicFree 处理，
+    // 真正的格式纠错由导入侧的重试兜底完成。
     return false;
   }
 

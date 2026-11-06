@@ -235,7 +235,6 @@ class PluginManager extends StateNotifier<PluginListState> {
     }
 
     final isLx = engine.isLxPluginScript(trimmed);
-    final isAnime = !isLx && engine.isAnimePluginScript(trimmed);
     final info = engine.parseLxScriptInfo(trimmed);
     final id = sha256.convert(bytes).toString();
 
@@ -244,23 +243,41 @@ class PluginManager extends StateNotifier<PluginListState> {
       return existing.first;
     }
 
-    Map<String, dynamic>? metadata;
-    if (isLx) {
-      metadata = await engine.loadLx(id, trimmed, scriptInfo: info);
-      if (metadata == null) {
-        throw PluginEngineException(tr('LX 插件初始化失败'));
+    // 格式判定只当「首选」，判错不该直接判死：LX 源里残留一句 module.exports、
+    // 或 MusicFree 插件内联了别人的 LX 代码，都会让单一判定走错 loader。两个
+    // loader 各自是独立的 Rust 沙箱，失败时不会 _ready.add（见 plugin_engine
+    // 的 loadLx / loadMusicFree），所以「失败一次再换另一种重试」是安全的，
+    // 代价只是一次毫秒级的失败尝试加一条日志。
+    var resolvedLx = isLx;
+    Map<String, dynamic>? metadata = await _tryLoadPlugin(
+      engine,
+      isLx: isLx,
+      id: id,
+      script: trimmed,
+      info: info,
+    );
+    if (metadata == null) {
+      final retried = await _tryLoadPlugin(
+        engine,
+        isLx: !isLx,
+        id: id,
+        script: trimmed,
+        info: info,
+      );
+      if (retried != null) {
+        metadata = retried;
+        resolvedLx = !isLx;
       }
-    } else {
-      metadata = await engine.loadMusicFree(id, trimmed);
-      if (metadata == null) {
-        throw PluginEngineException(tr('插件加载失败'));
-      }
+    }
+    if (metadata == null) {
+      throw PluginEngineException(
+          isLx ? tr('LX 插件初始化失败') : tr('插件加载失败'));
     }
 
     final path = await engine.store.saveScript(id, trimmed);
 
-    final sources = _extractSources(isLx, metadata);
-    final fallbackName = _firstNonEmptyText(isLx
+    final sources = _extractSources(resolvedLx, metadata);
+    final fallbackName = _firstNonEmptyText(resolvedLx
             ? [info['name'], fileName]
             : [
                 metadata['pluginName'],
@@ -268,12 +285,12 @@ class PluginManager extends StateNotifier<PluginListState> {
                 fileName,
               ]) ??
         tr('未知插件');
-    final mAuthor = isLx
+    final mAuthor = resolvedLx
         ? (info['author'] ?? '')
         : (metadata['author']?.toString() ?? '');
     final mVersion = versionOverride ??
-        (isLx ? (info['version'] ?? '') : (metadata['version']?.toString() ?? ''));
-    final mDesc = isLx
+        (resolvedLx ? (info['version'] ?? '') : (metadata['version']?.toString() ?? ''));
+    final mDesc = resolvedLx
         ? (info['description'] ?? '')
         : (metadata['description']?.toString() ?? '');
     // name 落库前去不可见字符：nameOverride（订阅 JSON 的 name 字段）同样可能
@@ -283,9 +300,11 @@ class PluginManager extends StateNotifier<PluginListState> {
     final source = PluginSource(
       id: id,
       name: cleanName.isNotEmpty ? cleanName : tr('未知插件'),
-      format: isLx
+      format: resolvedLx
           ? PluginFormat.lx
-          : (isAnime ? PluginFormat.anime : PluginFormat.musicfree),
+          : (engine.isAnimePluginScript(trimmed)
+              ? PluginFormat.anime
+              : PluginFormat.musicfree),
       version: mVersion,
       author: mAuthor,
       description: mDesc,
@@ -301,6 +320,28 @@ class PluginManager extends StateNotifier<PluginListState> {
     await engine.store.saveSources(list);
     state = state.copyWith(sources: list);
     return source;
+  }
+
+  /// 按指定格式加载一次插件；异常与空结果都收敛成 null，交给调用方换另一种
+  /// 格式重试。只用于导入时的格式纠错，不做兜底缓存。
+  Future<Map<String, dynamic>?> _tryLoadPlugin(
+    PluginEngine engine, {
+    required bool isLx,
+    required String id,
+    required String script,
+    required Map<String, String> info,
+  }) async {
+    try {
+      return isLx
+          ? await engine.loadLx(id, script, scriptInfo: info)
+          : await engine.loadMusicFree(id, script);
+    } catch (e) {
+      AppLog.warn(
+        'plugin',
+        '按${isLx ? ' LX' : ' MusicFree'} 加载失败，尝试另一种格式: $e',
+      );
+      return null;
+    }
   }
 
   Future<PluginInstallResult> installFromUrl(

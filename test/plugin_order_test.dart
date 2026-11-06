@@ -36,7 +36,7 @@ void main() {
 
     test('更新列表末尾的插件时位置不变', () {
       final got = reorderAfterPluginUpdate(
-        [_p('a', 0), _p('b', 1), _p('c', 2)],
+        [_p('a', 0), _p('b', 1), _p('c', 2), _p('c2', 3)],
         'c2',
         2,
         dropId: 'c',
@@ -46,7 +46,7 @@ void main() {
 
     test('下标越界按末尾处理，不抛异常', () {
       final got = reorderAfterPluginUpdate(
-        [_p('a', 0), _p('b', 1), _p('c', 2)],
+        [_p('a', 0), _p('b', 1), _p('c', 2), _p('c2', 3)],
         'c2',
         99,
         dropId: 'c',

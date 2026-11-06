@@ -1,9 +1,9 @@
 
 import 'dart:async';
 import 'dart:collection';
-import 'dart:io';
 
 import '../core/application_logger.dart';
+import '../core/url_health.dart';
 import 'media_url.dart';
 
 const List<String> kQualityLadder = [
@@ -147,47 +147,19 @@ class SongQualityProbe {
 
   bool get probing => _disposed ? false : _active > 0 || _queue.isNotEmpty;
 
-  /// 直链存活预检缓存（url → 可播）；进程内复用，容量超限整体清空
-  static final Map<String, bool> _urlHealth = <String, bool>{};
-
   /// 直链存活预检：Range GET 验证状态码与内容类型。
   /// 插件返回失效直链（404/HTML 错误页，如 haitangw 下线接口）时立即判
   /// 无效并降级下一品质，避免交给播放器白等 10s 起播超时。
+  /// 具体实现在 core/url_health.dart，起播取址路径共用同一份逻辑与缓存。
+  /// 探测场景下超时按不可播处理（宁可少一个档位，也不要把坏链交给播放器）。
   static Future<bool> _checkUrlAlive(
       String url, Map<String, String>? headers) async {
-    final cached = _urlHealth[url];
-    if (cached != null) return cached;
-    if (_urlHealth.length > 500) _urlHealth.clear();
-    HttpClient? client;
-    try {
-      client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
-      final req = await client.getUrl(Uri.parse(url));
-      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1');
-      headers?.forEach((k, v) {
-        try {
-          req.headers.set(k, v);
-        } catch (_) {}
-      });
-      final res = await req.close().timeout(const Duration(seconds: 6));
-      final status = res.statusCode;
-      final type = res.headers.contentType?.toString() ?? '';
-      try {
-        await res.drain<void>().timeout(const Duration(seconds: 3));
-      } catch (_) {}
-      final ok = status < 400 && !type.contains('text/html');
-      if (!ok) {
-        AppLog.warn('quality',
-            '直链预检不可播 status=$status type=$type url=$url');
-      }
-      _urlHealth[url] = ok;
-      return ok;
-    } catch (_) {
-      // 连接失败/超时按不可播处理：该直链在播放器侧同样会超时
-      _urlHealth[url] = false;
-      return false;
-    } finally {
-      client?.close(force: true);
-    }
+    final health = await probeUrlHealth(
+      url,
+      headers: headers,
+      timeout: const Duration(seconds: 6),
+    );
+    return health?.ok ?? false;
   }
 
   Future<QualityProbeResult?> probe(String quality) {

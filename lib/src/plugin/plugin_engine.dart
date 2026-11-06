@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../core/application_logger.dart';
+import '../core/url_health.dart';
 import '../player/media_url.dart';
 import '../rust/api.dart' as frb;
 import '../i18n/i18n.dart';
@@ -581,6 +582,19 @@ class PluginEngine {
     }
     AppLog.info('plugin',
         '[musicUrl] ${source.name}/$sourceKey $quality -> ${type == quality ? type : '$type(declared $quality)'}');
+    // 直链预检：插件「解析成功」不等于「能播」。共享源常返回 404/HTML 错误页
+    // 甚至别的歌，不拦就要等播放器起播超时（约 10s）才暴露，期间用户只看到
+    // 一直转圈。这里用 Range GET 抢先验一次，确定坏链就当作「无结果」返回，
+    // 调用方的候选/换源逻辑会自然去试下一个插件。
+    // 超时或异常按「未知」放行，避免弱网被误判成源坏。放在这里而不是级联
+    // 层，是因为下载、日推源存活探测、换源都直接调本方法，一处覆盖全部路径。
+    final health = await probeUrlHealth(url, headers: headers);
+    if (health != null && !health.ok) {
+      AppLog.warn('plugin',
+          '[musicUrl] ${source.name}/$sourceKey $quality 预检不可播'
+          '(status=${health.status} type=${health.contentType})，按无结果处理');
+      return null;
+    }
     return {
       'type': type,
       'url': url,
@@ -735,6 +749,19 @@ class PluginEngine {
     final candidates =
         lxPlugins.where((p) => p.sources.contains(source)).toList();
     if (candidates.isEmpty) return null;
+    // 平台优先源置顶，其余保持 sortOrder：全局顺序只有一条，解不出各平台
+    // 的实际差异（主源 kw/wy 上游冗余多、备用源 kg/tx/mg 更强），因此允许
+    // 按平台单独指定首选源。未配置时顺序与之前完全一致。
+    final platformPriority = await store.resolvedPlatformPriority();
+    final preferId = platformPriority[source];
+    if (preferId != null && preferId.isNotEmpty) {
+      final preferIdx = candidates.indexWhere((p) => p.id == preferId);
+      if (preferIdx > 0) {
+        candidates.insert(0, candidates.removeAt(preferIdx));
+        AppLog.info('plugin',
+            '[musicUrl] $source 平台优先源置顶: ${candidates.first.name}');
+      }
+    }
     for (final plugin in candidates) {
       // 插件自报「不支持该档位」时改用它声明支持的档位重试一次：
       // 否则固定档位会被逐插件连续拒绝，白白等满每轮网络往返

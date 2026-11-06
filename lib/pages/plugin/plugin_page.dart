@@ -15,6 +15,7 @@ import '../../src/core/application_logger.dart';
 import '../../src/core/haptics.dart';
 import '../../src/core/settings.dart';
 import '../../src/navigation/shell.dart';
+import '../../src/online/online_search_provider.dart';
 import '../../src/plugin/plugin_engine.dart';
 import '../../src/plugin/plugin_models.dart';
 import '../../src/plugin/plugin_preferences.dart';

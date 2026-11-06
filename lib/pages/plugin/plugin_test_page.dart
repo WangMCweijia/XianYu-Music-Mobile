@@ -743,7 +743,7 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
             _summaryCard(scheme),
             const SizedBox(height: 10),
             if (_cells.isNotEmpty) ...[
-              _qualityMatrix(scheme),
+              _qualityMatrix(scheme, realNames),
               const SizedBox(height: 10),
             ],
             for (final g in _TestGroup.values)
@@ -961,7 +961,7 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
 
   /// 行=平台、列=音质档位。左列固定不滚动，只有档位列横向滚动，
   /// 这样平台名始终可见（超过 5 档时才需要横滑）。
-  Widget _qualityMatrix(ColorScheme scheme) {
+  Widget _qualityMatrix(ColorScheme scheme, bool realNames) {
     final index = <String, _QCell>{
       for (final c in _cells) '${c.platformKey}\u0000${c.quality}': c,
     };

@@ -76,6 +76,12 @@ class _QCell {
 
   /// 真实规格低于请求档位时的说明（如「请求 24bit，实给 16bit」）。
   String downgradeNote = '';
+
+  /// 直链主机归属的平台键。聚合源允许「补档」——咪咕自己没有 320K/无损时
+  /// 会拿酷我的文件顶上（实测 kw-er.kuwo.cn），照样能播，但那一格其实不是
+  /// 本平台的资源。矩阵必须把这件事说出来，否则「咪咕全绿」是假的。
+  String offSource = '';
+
   String host = '';
   int? httpStatus;
   int? totalBytes;
@@ -99,6 +105,9 @@ class _QCell {
     final q = _rankOf(quality);
     return a >= 0 && q >= 0 && a < q;
   }
+
+  /// 这一格拿到的其实不是本平台的资源（其它平台补档）。
+  bool get offPlatform => offSource.isNotEmpty && offSource != platformKey;
 }
 
 class _PluginTestPageState extends ConsumerState<PluginTestPage> {
@@ -366,6 +375,28 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
     return name == key ? key.toUpperCase() : name;
   }
 
+  /// 各平台自有 CDN 的后缀。只看主机够用了：补档给出的必然是它自己平台的
+  /// 直链（咪咕没有就落 kw-er.kuwo.cn），而聚合层的代理域名不会命中这里，
+  /// 不会误判成「跨平台」。
+  static const Map<String, List<String>> _hostSuffixes = {
+    'kw': ['kuwo.cn'],
+    'wy': ['126.net', '127.net', '163.com'],
+    'kg': ['kugou.com'],
+    'tx': ['qq.com'],
+    'mg': ['migu.cn'],
+  };
+
+  static String _hostPlatform(String host) {
+    final h = host.toLowerCase();
+    if (h.isEmpty) return '';
+    for (final e in _hostSuffixes.entries) {
+      for (final s in e.value) {
+        if (h == s || h.endsWith('.$s')) return e.key;
+      }
+    }
+    return '';
+  }
+
   Future<void> _run() async {
     if (_running) return;
     final keyword = _kwCtrl.text.trim();
@@ -548,7 +579,25 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
   }
 
   /// 单个矩阵单元：取链 → HTTP 实测 → 记录实际类型与文件大小。
+  ///
+  /// 失败自动补一次：上游限流、单跳超时都很常见，同一格隔一秒重跑通常就通了。
+  /// 不补的话「刚才被限流」会被显示成「这个源不支持该档位」，判断就错了。
+  /// 「该平台无搜索结果」是确定结论，不重试。
   Future<void> _testCell(
+    _QCell cell,
+    PluginSource source,
+    PluginEngine engine,
+    Map<String, PluginSearchResult> firstByKey,
+  ) async {
+    await _testCellOnce(cell, source, engine, firstByKey);
+    if (!mounted || cell.status != _TestStatus.fail) return;
+    if (cell.err == tr('该平台无搜索结果')) return;
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    if (!mounted) return;
+    await _testCellOnce(cell, source, engine, firstByKey);
+  }
+
+  Future<void> _testCellOnce(
     _QCell cell,
     PluginSource source,
     PluginEngine engine,
@@ -617,13 +666,16 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
       setState(() {
         cell.ms = sw.elapsedMilliseconds;
         cell.host = host;
+        cell.offSource = _hostPlatform(host);
         cell.httpStatus = status;
         cell.totalBytes = total;
         cell.actualType = actualType;
         cell.realSpec = realSpec;
         cell.downgradeNote = _specDowngradeNote(cell.quality, spec);
         if (status == 200 || status == 206) {
-          cell.status = cell.downgraded ? _TestStatus.warn : _TestStatus.ok;
+          cell.status = (cell.downgraded || cell.offPlatform)
+              ? _TestStatus.warn
+              : _TestStatus.ok;
           cell.err = '';
         } else {
           cell.status = _TestStatus.fail;
@@ -770,6 +822,13 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
       _items.where((it) => it.status == _TestStatus.fail).length +
       _cells.where((c) => c.status == _TestStatus.fail).length;
   int get _warn => _cells.where((c) => c.status == _TestStatus.warn).length;
+
+  /// 实际规格低于请求的格数。「虚标」说得太重——多数情况是这首曲子在该平台
+  /// 压根没有这一档资源（咪咕的 SONY 曲目只开放 128K），不是源在撒谎。
+  int get _specWarn => _cells.where((c) => c.downgraded).length;
+
+  /// 拿到的其实是别的平台文件的格数（聚合源的补档行为）。
+  int get _offWarn => _cells.where((c) => c.offPlatform).length;
   int get _skip =>
       _items.where((it) => it.status == _TestStatus.skip).length +
       _cells.where((c) => c.declared && c.status == _TestStatus.skip).length;
@@ -806,7 +865,7 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
         _TestStatus.warn => (
           Icons.error_outline,
           const Color(0xFFEF8C00),
-          tr('类型不符'),
+          tr('降级/补档'),
         ),
         _TestStatus.pending => (
           Icons.radio_button_unchecked,
@@ -906,10 +965,20 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
                       color: appSecondaryFg(scheme),
                     ),
                   ),
-                  if (_warn > 0 && !_running) ...[
+                  if (_specWarn > 0 && !_running) ...[
                     const SizedBox(height: 3),
                     Text(
-                      tr('{n} 档实际返回低于请求（疑似虚标）', {'n': _warn}),
+                      tr('{n} 档实际规格低于请求', {'n': _specWarn}),
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        color: Color(0xFFEF8C00),
+                      ),
+                    ),
+                  ],
+                  if (_offWarn > 0 && !_running) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      tr('{n} 档实际来自其他平台（补档）', {'n': _offWarn}),
                       style: const TextStyle(
                         fontSize: 10.5,
                         color: Color(0xFFEF8C00),
@@ -1114,7 +1183,7 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
               children: [
                 _legendDot(scheme, _cOk, tr('可用')),
                 _legendDot(scheme, scheme.error, tr('失败')),
-                _legendDot(scheme, _cWarn, tr('类型不符')),
+                _legendDot(scheme, _cWarn, tr('降级/补档')),
                 _legendDot(scheme, scheme.outline, tr('未声明')),
               ],
             ),
@@ -1207,10 +1276,29 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
   void _showCellDetail(_QCell c) {
     final (_, color, label) = switch (c.status) {
       _TestStatus.ok => (Icons.check_circle, _cOk, tr('通过')),
-      _TestStatus.warn => (Icons.error_outline, _cWarn, tr('类型不符')),
+      _TestStatus.warn => (Icons.error_outline, _cWarn, tr('降级/补档')),
       _TestStatus.fail => (Icons.cancel, Theme.of(context).colorScheme.error, tr('失败')),
       _ => (Icons.info, Theme.of(context).colorScheme.outline, tr('跳过')),
     };
+
+    // 失败但同一平台有更低档位通过时，多半不是网络问题，而是这首曲子在那种
+    // 平台上没有这一档资源（咪咕对 SONY 曲目只开放 128K，官方接口换任何
+    // toneFlag 都只回 MP3_128）。给出推断，免得把「无此档」当成插件坏了。
+    final lowerOk = <_QCell>[];
+    if (c.status == _TestStatus.fail) {
+      lowerOk.addAll(
+        _cells.where(
+          (o) =>
+              o.platformKey == c.platformKey &&
+              o.status == _TestStatus.ok &&
+              _QCell._rankOf(o.quality) >= 0 &&
+              _QCell._rankOf(o.quality) < _QCell._rankOf(c.quality),
+        ),
+      );
+      lowerOk.sort(
+        (a, b) => _QCell._rankOf(b.quality).compareTo(_QCell._rankOf(a.quality)),
+      );
+    }
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1231,6 +1319,13 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
                 c.realSpec,
                 c.downgradeNote.isNotEmpty ? _cWarn : null,
               ),
+            if (c.offPlatform)
+              _kvRow(
+                ctx,
+                tr('实际来源'),
+                tr('{p}（补档）', {'p': _platformName(c.offSource)}),
+                _cWarn,
+              ),
             if (c.downgradeNote.isNotEmpty)
               _kvRow(ctx, tr('不符之处'), c.downgradeNote, _cWarn),
             if (c.actualType != null && c.actualType!.isNotEmpty)
@@ -1246,6 +1341,16 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
               _kvRow(ctx, tr('文件大小'), _fmtBytes(c.totalBytes!)),
             if (c.ms != null) _kvRow(ctx, tr('耗时'), _fmtMs(c.ms!)),
             if (c.err.isNotEmpty) _kvRow(ctx, tr('错误'), c.err),
+            if (lowerOk.isNotEmpty)
+              _kvRow(
+                ctx,
+                tr('推断'),
+                tr('该平台此曲最高 {l}，{q} 疑似无此档资源', {
+                  'l': lowerOk.first.quality,
+                  'q': c.quality,
+                }),
+                _cWarn,
+              ),
           ],
         ),
         actions: [

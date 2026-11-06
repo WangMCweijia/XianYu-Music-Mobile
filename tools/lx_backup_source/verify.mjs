@@ -91,13 +91,23 @@ function kindOf(buf) {
   return '?' + h4
 }
 
+// FLAC STREAMINFO：验证"母带档"是不是真 24bit（声明支持不等于真给）
+function flacBits(buf) {
+  if (buf.slice(0, 4).toString('hex') !== '664c6143') return null
+  if ((buf[4] & 0x7f) !== 0) return null
+  const b20 = buf[20]
+  const b21 = buf[21]
+  return (((b20 & 0x01) << 4) | (b21 >> 4)) + 1
+}
+
 for (const s of platforms) {
   for (const q of tiers) {
     try {
       const r = await handler({ source: s, action: 'musicUrl', info: { type: q, musicInfo: CASES[s] } })
-      const res = await fetch(r.url, { headers: { Range: 'bytes=0-15' }, redirect: 'follow' })
+      const res = await fetch(r.url, { headers: { Range: 'bytes=0-63' }, redirect: 'follow' })
       const buf = Buffer.from(await res.arrayBuffer())
       const kind = kindOf(buf)
+      const bits = kind === 'FLAC' ? flacBits(buf) : null
       const ct = res.headers.get('content-type') || ''
       const range = res.headers.get('content-range') || ''
       const size = range ? range.split('/')[1] : res.headers.get('content-length')
@@ -109,9 +119,9 @@ for (const s of platforms) {
       const ok = wantLossless ? lossless : lossy || lossless
       const note = !wantLossless && lossless ? ' ↑升档' : ''
       console.log(
-        `${ok ? '✅' : '❌'} ${s}/${String(q).padEnd(9)} → ${String(r.type).padEnd(9)} 实际=${kind.padEnd(5)} ${mb.padStart(
-          8
-        )}${note.padEnd(8)} 上游=${r.provider}`
+        `${ok ? '✅' : '❌'} ${s}/${String(q).padEnd(9)} → ${String(r.type).padEnd(9)} 实际=${kind.padEnd(5)}${
+          bits ? ` ${bits}bit` : '     '
+        } ${mb.padStart(8)}${note.padEnd(8)} 上游=${r.provider}`
       )
     } catch (e) {
       console.log(`❌ ${s}/${String(q).padEnd(9)}  ${e && e.message ? e.message : e}`)

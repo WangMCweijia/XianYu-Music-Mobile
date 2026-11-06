@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../src/core/app_colors.dart';
+import '../../src/core/settings.dart';
 import '../../src/i18n/i18n.dart';
 import '../../src/plugin/plugin_catalog.dart';
 import '../../src/plugin/plugin_engine.dart';
@@ -67,6 +68,14 @@ class _QCell {
   final String songTitle;
   _TestStatus status = _TestStatus.pending;
   String? actualType;
+
+  /// 文件头嗅探出的真实规格（`FLAC 24bit/48k`、`MP3 320k`）。
+  /// 插件自报的 [actualType] 只复述请求档位，虚标源照样报「flac24bit」，
+  /// 只有这里是文件本身说了算。空串＝没取到字节或无法识别。
+  String realSpec = '';
+
+  /// 真实规格低于请求档位时的说明（如「请求 24bit，实给 16bit」）。
+  String downgradeNote = '';
   String host = '';
   int? httpStatus;
   int? totalBytes;
@@ -82,7 +91,10 @@ class _QCell {
 
   /// 上游实际返回的档位低于请求档位 = 虚标/降级（请求 FLAC 给 320k）。
   /// 返回更高档位不算问题，所以只判小于。
-  bool get downgraded {
+  /// [downgradeNote] 是文件头铁证，优先于插件自报的 type。
+  bool get downgraded => downgradeNote.isNotEmpty || _byTypeDowngrade;
+
+  bool get _byTypeDowngrade {
     final a = _rankOf(actualType);
     final q = _rankOf(quality);
     return a >= 0 && q >= 0 && a < q;
@@ -127,7 +139,7 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
     });
   }
 
-  Future<(int, int?, String?)> _probeUrl(
+  Future<(int, int?, String?, List<int>)> _probeUrl(
     String url,
     Map<String, String>? headers,
   ) async {
@@ -140,25 +152,126 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
         'User-Agent',
         'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Mobile Safari/537.36',
       );
-      // 取前 64KB：既验证可播，也够拿 Content-Range 估码率；服务端忽略 Range
-      // 返回 200 全量时靠下面的 64KB 提前 break 断开，不会整包下载。
+      // 取前 64KB：既验证可播，也够拿 Content-Range 估码率、够嗅探文件头；
+      // 服务端忽略 Range 返回 200 全量时靠下面的 64KB 提前 break 断开，
+      // 不会整包下载。
       req.headers.set('Range', 'bytes=0-65535');
       headers?.forEach((k, v) {
         if (k.toLowerCase() != 'range') req.headers.set(k, v);
       });
       final resp = await req.close().timeout(const Duration(seconds: 8));
       final total = _totalBytesOf(resp);
-      var read = 0;
+      final head = <int>[];
       await for (final chunk in resp.timeout(const Duration(seconds: 8))) {
-        read += chunk.length;
-        if (read >= 65536) break;
+        head.addAll(chunk);
+        if (head.length >= 65536) break;
       }
-      return (resp.statusCode, total, null);
+      return (resp.statusCode, total, null, head);
     } catch (e) {
-      return (0, null, e.toString());
+      return (0, null, e.toString(), const <int>[]);
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// 从文件头判定真实容器与规格。
+  ///
+  /// 只测「能不能取到链接」是不够的：共享源普遍存在「要 24bit 给 16bit」
+  /// 「要无损给 320K」的虚标（酷我/网易/咪咕的 flac24bit 实测与 flac 是同一个
+  /// 文件），插件的 `type` 字段只会复述请求值，看不出真假。这里直接读魔数：
+  /// FLAC 的 STREAMINFO 第 18~21 字节带着采样率与位深，MP3 帧头带着码率。
+  ({String kind, int? bits, int? rate, int? kbps}) _sniffAudio(List<int> h) {
+    bool has(int i, String s) {
+      if (h.length < i + s.length) return false;
+      for (var k = 0; k < s.length; k++) {
+        if (h[i + k] != s.codeUnitAt(k)) return false;
+      }
+      return true;
+    }
+
+    // FLAC: 'fLaC' + STREAMINFO（首块，4 字节头后紧跟 34 字节）
+    if (has(0, 'fLaC')) {
+      if (h.length >= 22 && (h[4] & 0x7f) == 0) {
+        final rate = (h[18] << 12) | (h[19] << 4) | (h[20] >> 4);
+        final bits = (((h[20] & 0x01) << 4) | (h[21] >> 4)) + 1;
+        return (kind: 'FLAC', bits: bits, rate: rate, kbps: null);
+      }
+      return (kind: 'FLAC', bits: null, rate: null, kbps: null);
+    }
+    // MP4/M4A: 第 4~8 字节 'ftyp'
+    if (has(4, 'ftyp')) {
+      return (kind: 'M4A', bits: null, rate: null, kbps: null);
+    }
+    // OGG
+    if (has(0, 'OggS')) return (kind: 'OGG', bits: null, rate: null, kbps: null);
+    if (has(0, 'RIFF')) return (kind: 'WAV', bits: null, rate: null, kbps: null);
+
+    // MP3：跳过 ID3v2 头后找第一个有效帧头，读码率索引
+    var start = 0;
+    if (has(0, 'ID3') && h.length >= 10) {
+      start = 10 +
+          ((h[6] & 0x7f) << 21) +
+          ((h[7] & 0x7f) << 14) +
+          ((h[8] & 0x7f) << 7) +
+          (h[9] & 0x7f);
+    }
+    const v1l3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+    const v2l3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+    for (var i = start; i < h.length - 4; i++) {
+      if (h[i] != 0xff || (h[i + 1] & 0xe0) != 0xe0) continue;
+      if (((h[i + 1] >> 1) & 0x3) != 1) continue; // 只要 Layer III
+      final idx = (h[i + 2] >> 4) & 0xf;
+      if (idx == 0 || idx == 15) continue;
+      final isV1 = ((h[i + 1] >> 3) & 0x3) == 3;
+      final kbps = (isV1 ? v1l3 : v2l3)[idx];
+      if (kbps > 0) return (kind: 'MP3', bits: null, rate: null, kbps: kbps);
+    }
+    if (h.isEmpty) return (kind: '', bits: null, rate: null, kbps: null);
+    return (kind: '?', bits: null, rate: null, kbps: null);
+  }
+
+  /// 真实规格的可读形式，例如 `FLAC 24bit/48k`、`MP3 320k`。
+  String _fmtSpec(({String kind, int? bits, int? rate, int? kbps}) s) {
+    if (s.kind.isEmpty) return '';
+    if (s.kind == 'FLAC' && s.bits != null) {
+      final khz = s.rate == null || s.rate == 0
+          ? ''
+          : '/${(s.rate! / 1000).toStringAsFixed(s.rate! % 1000 == 0 ? 0 : 1)}k';
+      return 'FLAC ${s.bits}bit$khz';
+    }
+    if (s.kind == 'MP3' && s.kbps != null) return 'MP3 ${s.kbps}k';
+    return s.kind;
+  }
+
+  /// 文件头与请求档位不符时给出人话说明；相符返回空串。
+  ///
+  /// 这是「实测」与「声明」的分界线：源说给 24bit、实际给 16bit 的情况在
+  /// 共享源里非常普遍（同一个文件被复用到多个档位），只看插件自报永远是绿的。
+  String _specDowngradeNote(String want, ({String kind, int? bits, int? rate, int? kbps}) s) {
+    final kind = s.kind;
+    if (kind.isEmpty || kind == '?') return '';
+    const losslessTiers = {
+      'flac', 'flac24bit', 'hires', 'vinyl', 'dolby', 'atmos', 'atmos_plus',
+      'master',
+    };
+    const lossyKinds = {'MP3', 'M4A', 'OGG'};
+    if (losslessTiers.contains(want) && lossyKinds.contains(kind)) {
+      return tr('请求 {q}，实给 {k}', {'q': want, 'k': _fmtSpec(s)});
+    }
+    if (kind == 'FLAC') {
+      final is24Tier = want == 'flac24bit' || want == 'hires' || want == 'master';
+      if (is24Tier && s.bits != null && s.bits! < 24) {
+        return tr('请求 {q}，实给 {b}bit', {'q': want, 'b': '${s.bits}'});
+      }
+      return '';
+    }
+    if (kind == 'MP3' && s.kbps != null) {
+      final wantKbps = want == '320k' ? 320 : (want == '128k' ? 128 : 0);
+      if (wantKbps > 0 && s.kbps! + 16 < wantKbps) {
+        return tr('请求 {q}，实给 {b}k', {'q': want, 'b': '${s.kbps}'});
+      }
+    }
+    return '';
   }
 
   /// 文件总字节数：优先 Content-Range 的 `/total`，退化到 Content-Length。
@@ -174,6 +287,27 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
   }
 
   static const List<String> _fallbackQualities = ['128k', '320k', 'flac'];
+
+  /// 列头短标签：格宽只有 42px，`flac24bit` 原样排会折成两行。
+  /// 这里只影响表头显示，取值仍用原始档位键。
+  String _qualityLabel(String q) {
+    switch (q) {
+      case 'flac24bit':
+        return '24bit';
+      case 'flac':
+        return 'FLAC';
+      case 'hires':
+        return 'Hi-Res';
+      case 'atmos_plus':
+        return 'Atmos+';
+      case 'master':
+        return 'Master';
+      case 'mgg':
+        return '96k';
+      default:
+        return q;
+    }
+  }
 
   /// 某个平台自己声明的音质档位（**不与其他平台取并集**）。
   ///
@@ -219,9 +353,16 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
 
   /// 平台显示名：复用榜单页/搜索页那套 LX 昵称映射（小蜗/小枸…），
   /// 未知键回退成大写原始键，保证表格永远有标签可读。
-  String _platformName(String key) {
+  ///
+  /// [real] 跟随插件设置的「显示真实音源名」。测试页原先写死昵称，
+  /// 于是用户在设置里开了真名、回到测试页仍是「小枸音乐」——同一个平台
+  /// 在两处叫两个名字，排查音源时极易对错行。build 传入 watch 到的值，
+  /// 非 build 路径（跑测试/详情弹窗）用 read 取当前值。
+  String _platformName(String key, {bool? real}) {
     if (key == '-') return tr('单平台');
-    final name = lxPlatformDisplayName(key);
+    final useReal =
+        real ?? (ref.read(settingsProvider).valueOrNull?.showRealSourceName ?? false);
+    final name = lxPlatformDisplayName(key, real: useReal);
     return name == key ? key.toUpperCase() : name;
   }
 
@@ -469,7 +610,9 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
       }
 
       final host = Uri.tryParse(url)?.host ?? '';
-      final (status, total, err) = await _probeUrl(url, headers);
+      final (status, total, err, head) = await _probeUrl(url, headers);
+      final spec = _sniffAudio(head);
+      final realSpec = _fmtSpec(spec);
       if (!mounted) return;
       setState(() {
         cell.ms = sw.elapsedMilliseconds;
@@ -477,6 +620,8 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
         cell.httpStatus = status;
         cell.totalBytes = total;
         cell.actualType = actualType;
+        cell.realSpec = realSpec;
+        cell.downgradeNote = _specDowngradeNote(cell.quality, spec);
         if (status == 200 || status == 206) {
           cell.status = cell.downgraded ? _TestStatus.warn : _TestStatus.ok;
           cell.err = '';
@@ -498,6 +643,9 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 设置里「显示真实音源名」变化时本页同步刷新（矩阵行标签与搜索项标题都吃这个值）
+    final realNames = ref.watch(
+        settingsProvider.select((s) => s.valueOrNull?.showRealSourceName ?? false));
     final source = ref
         .watch(pluginManagerProvider)
         .sources
@@ -893,7 +1041,7 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
                           child: Align(
                             alignment: Alignment.centerLeft,
                             child: Text(
-                              _platformName(p),
+                              _platformName(p, real: realNames),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
@@ -920,7 +1068,10 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
                                   width: _cellW,
                                   child: Center(
                                     child: Text(
-                                      q,
+                                      _qualityLabel(q),
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.clip,
                                       style: TextStyle(
                                         fontSize: 10.5,
                                         fontWeight: FontWeight.w600,
@@ -1073,12 +1224,21 @@ class _PluginTestPageState extends ConsumerState<PluginTestPage> {
           children: [
             _kvRow(ctx, tr('状态'), label, color),
             if (c.songTitle.isNotEmpty) _kvRow(ctx, tr('测试曲目'), c.songTitle),
+            if (c.realSpec.isNotEmpty)
+              _kvRow(
+                ctx,
+                tr('文件实测'),
+                c.realSpec,
+                c.downgradeNote.isNotEmpty ? _cWarn : null,
+              ),
+            if (c.downgradeNote.isNotEmpty)
+              _kvRow(ctx, tr('不符之处'), c.downgradeNote, _cWarn),
             if (c.actualType != null && c.actualType!.isNotEmpty)
               _kvRow(
                 ctx,
-                tr('实际类型'),
-                c.downgraded ? '${c.actualType} （低于请求）' : c.actualType!,
-                c.downgraded ? _cWarn : null,
+                tr('源自报'),
+                c.actualType!,
+                c._byTypeDowngrade ? _cWarn : null,
               ),
             if (c.host.isNotEmpty) _kvRow(ctx, tr('主机'), c.host),
             if (c.httpStatus != null) _kvRow(ctx, 'HTTP', '${c.httpStatus}'),

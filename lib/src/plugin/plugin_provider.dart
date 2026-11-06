@@ -313,13 +313,53 @@ class PluginManager extends StateNotifier<PluginListState> {
       importedAt: DateTime.now().millisecondsSinceEpoch,
       enabled: true,
       sources: sources,
-      sortOrder: state.sources.length,
+      // 新建一律追加到末尾；更新走「装新→删旧→restoreOrder 放回原位」，
+      // 因此这里不需要为更新留出入口
+      sortOrder: _nextSortOrder(),
     );
 
     final list = [...state.sources, source];
     await engine.store.saveSources(list);
     state = state.copyWith(sources: list);
     return source;
+  }
+
+  /// 追加安装用的下一个序号：取现有最大值 +1，而不是 `sources.length`。
+  /// 列表经过删除后 length 会小于最大序号，直接用 length 会与既有条目撞号，
+  /// 撞号后顺序取决于数组下标，删掉一个再装一个就跑到中间去了。
+  int _nextSortOrder() {
+    var max = -1;
+    for (final s in state.sources) {
+      final v = s.sortOrder;
+      if (v != null && v > max) max = v;
+    }
+    return max + 1;
+  }
+
+  /// 按传入列表顺序重编号 0..n-1 并持久化。
+  ///
+  /// 列表顺序就是用户看到的顺序（插件页直接渲染 store 顺序），sortOrder 只是
+  /// 它的镜像；这里顺带把历史遗留的 null / 重复序号收敛成连续值，避免撞号后
+  /// 「谁先谁后取决于数组下标」的不确定行为。
+  Future<void> _renumber(PluginEngine engine, List<PluginSource> list) async {
+    final normalized = renumberPluginSources(list);
+    await engine.store.saveSources(normalized);
+    state = state.copyWith(sources: normalized);
+  }
+
+  /// 更新换 id 后把新记录放回旧位置：`index` 为更新前旧记录在列表中的下标。
+  ///
+  /// 不依赖 sortOrder 做定位——老数据里 sortOrder 可能为 null 或重复，只有
+  /// 「旧记录当时的下标」是可靠锚点。`dropId` 非空时顺手剔掉旧记录。
+  Future<void> restoreOrder(String newId, int index, {String? dropId}) async {
+    final engine = await _getEngine();
+    final list = reorderAfterPluginUpdate(
+      state.sources,
+      newId,
+      index,
+      dropId: dropId,
+    );
+    await _renumber(engine, list);
   }
 
   /// 按指定格式加载一次插件；异常与空结果都收敛成 null，交给调用方换另一种
@@ -553,6 +593,8 @@ class PluginManager extends StateNotifier<PluginListState> {
     final oldSource = state.sources.where((s) => s.id == oldId).toList();
     if (oldSource.isEmpty) throw PluginEngineException(tr('插件不存在'));
     final engine = await _getEngine();
+    // 记下旧记录在列表里的位置：更新只换内容，不该改变用户排好的顺序
+    final oldIndex = state.sources.indexWhere((s) => s.id == oldId);
     final newSource = await installFromScript(
       newScript,
       nameOverride: oldSource.first.name,
@@ -561,15 +603,15 @@ class PluginManager extends StateNotifier<PluginListState> {
     if (newSource.id == oldId) return;
     await engine.destroy(oldId);
     await engine.store.deleteScript(oldId);
-    final list = state.sources.where((s) => s.id != oldId).toList();
-    await engine.store.saveSources(list);
     // id 变更入别名表：收藏/播放队列存的旧 pluginId 仍可换算到现行插件
     //（来源标签、播放解析都依赖 id 匹配）；链尾若也是旧键则压缩成直达
     final aliases = Map<String, String>.of(state.idAliases)
       ..removeWhere((_, v) => v == oldId)
       ..[oldId] = newSource.id;
     await engine.store.saveAliases(aliases);
-    state = state.copyWith(sources: list, idAliases: aliases);
+    state = state.copyWith(idAliases: aliases);
+    // 剔旧 + 放回旧下标：新记录默认追加在末尾，不归位就会「更新即沉底」
+    await restoreOrder(newSource.id, oldIndex, dropId: oldId);
     engine.bakaManager.clearCache(oldId);
     if (newSource.id != oldId) engine.bakaManager.clearCache(newSource.id);
   }

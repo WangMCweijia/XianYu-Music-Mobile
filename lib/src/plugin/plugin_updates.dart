@@ -316,6 +316,9 @@ class PluginUpdateService {
       return (success: false, newSource: null, message: tr('无新脚本可更新'));
     }
     try {
+      // 记下旧记录的位置：更新只换内容（sha256 id 变化），位置应保持不变
+      final oldIndex =
+          manager.sources.indexWhere((s) => s.id == source.id);
       final newSource = await manager.installFromScript(
         checkResult.newScript!,
         fileName: checkResult.updateUrl,
@@ -323,6 +326,8 @@ class PluginUpdateService {
       );
       if (newSource.id != source.id) {
         await manager.remove(source.id);
+        // 新记录默认追加在末尾，这里按旧下标插回去，否则「更新即沉底」
+        await manager.restoreOrder(newSource.id, oldIndex);
         // 补别名：收藏/播放队列存的旧 pluginId 仍可换算到现行插件
         await manager.linkPluginAlias(source.id, newSource.id);
       }

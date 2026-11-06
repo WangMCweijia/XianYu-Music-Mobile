@@ -134,6 +134,37 @@ List<PluginSource> sortPluginSources(List<PluginSource> sources) {
   return indexed.map((e) => e.$1).toList();
 }
 
+/// 插件更新换 id 之后的列表重排（纯函数）。
+///
+/// 把 [newId] 插到 [index] 位置；[dropId] 非空时先剔除它（旧记录若还留在
+/// 列表里，删掉后右侧下标会整体前移，插入点就错位了）。[index] 为负或越界
+/// 一律按末尾处理。
+List<PluginSource> reorderAfterPluginUpdate(
+  List<PluginSource> sources,
+  String newId,
+  int index, {
+  String? dropId,
+}) {
+  final list = <PluginSource>[
+    for (final s in sources)
+      if (dropId == null || s.id != dropId) s,
+  ];
+  final from = list.indexWhere((s) => s.id == newId);
+  if (from < 0) return list;
+  final item = list.removeAt(from);
+  var at = index;
+  if (at < 0 || at > list.length) at = list.length;
+  list.insert(at, item);
+  return list;
+}
+
+/// 让 sortOrder 与下标严格对齐，顺带把历史遗留的 null / 重复序号收敛成
+/// 0..n-1。列表顺序即用户所见顺序，sortOrder 只是它的镜像。
+List<PluginSource> renumberPluginSources(List<PluginSource> sources) => [
+      for (var i = 0; i < sources.length; i++)
+        sources[i].sortOrder == i ? sources[i] : sources[i].copyWith(sortOrder: i),
+    ];
+
 class EngineLog {
   final String level;
   final String message;

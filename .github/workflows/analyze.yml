@@ -29,3 +29,8 @@ jobs:
       # 纯静态分析覆盖不到
       - name: Locate widget test
         run: flutter test test/list_locate_test.dart
+
+      # 插件更新后的排序归位是纯函数（下标 + 剔除旧记录），本机无需设备即可
+      # 覆盖，避免「更新一次沉底一次」这类回归
+      - name: Plugin order test
+        run: flutter test test/plugin_order_test.dart

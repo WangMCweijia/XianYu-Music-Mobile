@@ -199,7 +199,10 @@ flutter_launcher_icons:
   remove_alpha_ios: true
   # Android 传统图标使用白底方形图
   image_path_android: "tool/icons/app_icon_bg.png"
-  # Android 8.0+ 自适应图标：白色背景 + 前景 logo 层
+  # Android 8.0+ 自适应图标：白色背景 + 前景 logo 层。
+  # 注意：这两张图由 tool/icons/v3/build.js 生成，前景内容占画布 60%
+  # （按 66dp 安全圆实测越界 0%）；flutter_launcher_icons 默认按 66% 重排，
+  # 直接重跑会把耳尖和音符底部顶出圆形遮罩 —— 改图标请改 v3/build.js。
   adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "tool/icons/app_icon_foreground.png"
   min_sdk_android: 21

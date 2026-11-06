@@ -134,11 +134,14 @@ flutter hap          # 鸿蒙调试运行
 
 ### 构建各平台安装包
 
+> CI 只出 Android 包（见 `.github/workflows/build-android.yml`）：tag 触发 Release
+> 产物仅含 arm64 APK，iOS 构建已从流水线移除，不再随 tag 触发。
+
 ```bash
 # Android（.apk）
 flutter build apk --release
 
-# iOS（未签名校验构建，归档 / 签名走 Xcode）
+# iOS（本地自测用，未签名；CI 不构建，归档 / 签名走 Xcode）
 cd ios && pod install && cd ..
 flutter build ios --release --no-codesign
 

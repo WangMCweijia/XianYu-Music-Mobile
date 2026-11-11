@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show HttpStatus;
 import 'dart:math' as math;
@@ -21,6 +22,17 @@ final Map<String, (I18nMode, List<LyricLine>)> _lyricsCache = {};
 const int _lyricsCacheMax = 24;
 
 final Map<String, String> _payloadCache = {};
+
+/// 同一曲目的载荷抓取合并成一个 Future。
+///
+/// 播放页、桌面/锁屏歌词桥、悬浮歌词、状态栏歌词、在线预缓存会几乎同时请求
+/// 同一首歌；各跑一遍会重复调用插件引擎（单运行时、串行），把紧接着的
+/// 「取播放地址」排到后面，表现为切歌后很久才起播。
+final Map<String, Future<String>> _inflightPayload = {};
+
+/// 单纯为了补罗马音而向原生接口发的请求，等待上限。
+/// 超过就先用插件已有的罗马音（或先不出罗马音）把主歌词放出去。
+const Duration _romajiNativeTimeout = Duration(milliseconds: 1500);
 
 /// 罗马音开关会改变载荷内容：关着就不注入、也不额外请求原生接口，
 /// 所以缓存必须带上这个维度，否则「先播歌、后开开关」会一直空到换歌。
@@ -50,8 +62,9 @@ class LyricsRepository {
     try {
       final jsonStr = await fetchPayloadJson(item);
       if (jsonStr.isEmpty || jsonStr == 'null') return const [];
-      final parsed = await compute(_parseLyricsJson, jsonStr);
-      final lines = await compute(_normalizeBoundaries, parsed);
+      // 解析 + 边界归一在同一次 compute 里做完：两次 isolate 往返要把整份
+      // 歌词列表复制两遍，切歌时是可见的延迟。
+      final lines = await compute(_parseAndNormalizeLyricsJson, jsonStr);
       final localized = localizeLyricLines(lines);
       if (localized.isNotEmpty) _cacheLyrics(key, localized);
       return localized;
@@ -61,18 +74,29 @@ class LyricsRepository {
     }
   }
 
-  Future<String> fetchPayloadJson(QueueItem item) async {
+  Future<String> fetchPayloadJson(QueueItem item) {
     final key = _lyricsCacheKey(item.path, _wantsRomaji);
     final cached = _payloadCache[key];
-    if (cached != null) return cached;
-    final payload = await _fetchLyricsJson(item);
-    if (payload.isNotEmpty && payload != 'null') {
-      _payloadCache[key] = payload;
-      if (_payloadCache.length > _lyricsCacheMax) {
-        _payloadCache.remove(_payloadCache.keys.first);
+    if (cached != null) return Future.value(cached);
+    final inflight = _inflightPayload[key];
+    if (inflight != null) return inflight;
+    // 因等原生接口超时而「暂时没有罗马音」的载荷不进缓存：
+    // 否则这首歌在缓存有效期内会一直缺罗马音，只能靠重开开关补救。
+    var romajiDegraded = false;
+    final future = _fetchLyricsJson(
+      item,
+      onRomajiMissing: () => romajiDegraded = true,
+    ).then((payload) {
+      if (!romajiDegraded && payload.isNotEmpty && payload != 'null') {
+        _payloadCache[key] = payload;
+        if (_payloadCache.length > _lyricsCacheMax) {
+          _payloadCache.remove(_payloadCache.keys.first);
+        }
       }
-    }
-    return payload;
+      return payload;
+    }).whenComplete(() => _inflightPayload.remove(key));
+    _inflightPayload[key] = future;
+    return future;
   }
 
   /// 用户是否希望看到罗马音（主歌词页或桌面歌词任一开启即可）。
@@ -96,23 +120,31 @@ class LyricsRepository {
     }
   }
 
-  Future<String> _fetchLyricsJson(QueueItem item) async {
+  Future<String> _fetchLyricsJson(
+    QueueItem item, {
+    void Function()? onRomajiMissing,
+  }) async {
     if (item.isOnline) {
-      Map<String, dynamic>? cachedNative;
-      var nativeFetched = false;
+      Future<Map<String, dynamic>?>? nativePending;
+      // 同一个原生请求只发一次；不同调用点只是等待方式不同（有没有上限）。
+      // 超时只作用于「等」，不取消请求，后续仍能拿到完整结果。
       Future<Map<String, dynamic>?> nativeOnce({Duration? timeout}) async {
-        if (nativeFetched) return cachedNative;
-        nativeFetched = true;
-        final pending = fetchNativeLyricResult(item);
-        // 只有「主歌词已经拿到、原生接口纯粹用来补罗马音」时才设上限，
-        // 免得一个慢请求把整页歌词吊在那儿。
-        cachedNative = timeout == null
-            ? await pending
-            : await pending.timeout(timeout, onTimeout: () => null);
-        return cachedNative;
+        final pending = nativePending ??= fetchNativeLyricResult(item);
+        if (timeout == null) return await pending;
+        return await pending.timeout(timeout, onTimeout: () => null);
       }
 
       final wantRomaji = _wantsRomaji;
+      // 罗马音只有插件不给时才需要问原生接口。原生请求与插件请求互不依赖，
+      // 先并行起步：插件结果回来时它往往已经就绪，省掉两段网络串行叠加。
+      if (wantRomaji) {
+        unawaited(
+          nativeOnce(timeout: _romajiNativeTimeout).then<void>(
+            (_) {},
+            onError: (Object e) => AppLog.debug('lyric', '罗马音原生预取失败: $e'),
+          ),
+        );
+      }
       final pluginRes = await _fetchPluginLyric(item);
       if (pluginRes != null) {
         final mainText = pickPluginMainText(pluginRes);
@@ -155,11 +187,13 @@ class LyricsRepository {
           final needTranslationNative = translation.isEmpty && tlyric.isEmpty;
           final needRomajiNative = romajiTrack.isEmpty && wantRomaji;
           // 译文缺失（原有逻辑）或用户要看罗马音而插件没给，才向原生接口补一次。
-          // 单纯补罗马音时给 3 秒上限，译文兜底保持原样不设限。
+          // 单纯补罗马音时给短上限，译文兜底保持原样不设限。
+          var romajiDegraded = false;
           if (needTranslationNative || needRomajiNative) {
             final native = await nativeOnce(
-              timeout: needTranslationNative ? null : const Duration(seconds: 3),
+              timeout: needTranslationNative ? null : _romajiNativeTimeout,
             );
+            if (native == null && needRomajiNative) romajiDegraded = true;
             if (native != null) {
               final nTrans = (native['tlyric'] ?? '').trim();
               final nRoma = (native['rlyric'] ?? '').trim();
@@ -176,7 +210,9 @@ class LyricsRepository {
           final payload = await parseLyrics(
             rawLyrics: composePluginLyricsRaw(mainText, translation),
           );
-          return _withRomaji(payload, romajiTrack, wantRomaji);
+          final result = _withRomaji(payload, romajiTrack, wantRomaji);
+          if (romajiDegraded && romajiTrack.isEmpty) onRomajiMissing?.call();
+          return result;
         }
       } else {
         AppLog.debug('lyric', '插件歌词: 无结果');
@@ -701,6 +737,10 @@ String _alignAuxTrackToMainLyric(String mainContent, String auxText) {
   }
   return out.join('\n');
 }
+
+/// 一次 isolate 往返完成「解析 + 边界归一」。
+List<LyricLine> _parseAndNormalizeLyricsJson(String jsonStr) =>
+    _normalizeBoundaries(_parseLyricsJson(jsonStr));
 
 List<LyricLine> _parseLyricsJson(String jsonStr) {
   final map = jsonDecode(jsonStr) as Map<String, dynamic>;

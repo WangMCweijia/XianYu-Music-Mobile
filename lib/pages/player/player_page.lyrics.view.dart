@@ -108,6 +108,9 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
 
   bool _hasRomaji = false;
 
+  /// 刚把罗马音开关打开、但当前载荷里没有罗马音时置位，触发一次重取。
+  bool _wantRomajiReload = false;
+
   late final Ticker _ticker;
   final Stopwatch _anchorWatch = Stopwatch();
 
@@ -578,27 +581,33 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _fetchLyrics() async {
+  Future<void> _fetchLyrics({bool force = false}) async {
     final item = widget.current;
     if (item == null) return;
-    if (_loadedPath == item.path && _lines.isNotEmpty) return;
+    if (!force) {
+      if (_loadedPath == item.path && _lines.isNotEmpty) return;
 
-    final cached = _lyricsCache[item.path];
-    if (cached != null && cached.isNotEmpty) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _loadedPath = item.path;
-          _lines = cached;
-        });
-        _reportRomaji();
-        _lastActiveIndex = -1;
-        _renderActiveIndex = -1;
-        _pendingCenterJump = true;
-        _autoScrollToActiveLine(force: true);
+      final cached = _lyricsCache[item.path];
+      if (cached != null && cached.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _loadedPath = item.path;
+            _lines = cached;
+          });
+          _reportRomaji();
+          _lastActiveIndex = -1;
+          _renderActiveIndex = -1;
+          _pendingCenterJump = true;
+          _autoScrollToActiveLine(force: true);
+        }
+        return;
       }
-      return;
+    } else {
+      // 罗马音是按开关决定要不要取的，开开关后必须丢掉旧结果重取一次。
+      _lyricsCache.remove(item.path);
     }
+    if (_loadedPath != item.path) _wantRomajiReload = false;
 
     setState(() {
       _loading = true;
@@ -819,10 +828,20 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
         if (mounted) _tryPendingCenterJump();
       });
     }
+    if (newShowRomaji && !_showRomaji) _wantRomajiReload = true;
     _fontSizeIdx = newFontSizeIdx;
     _showTranslation = newShowTranslation;
     _showRomaji = newShowRomaji;
     _align = newAlign;
+
+    // 开关刚打开、当前这首还没有罗马音：重取一次（载荷按开关状态缓存，
+    // 不重取就一直是「打开开关也没反应」）。
+    if (_wantRomajiReload && !_hasRomaji && !_loading && _lines.isNotEmpty) {
+      _wantRomajiReload = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _fetchLyrics(force: true);
+      });
+    }
     final lyricFontFamily = (settings?.lyricFontName ?? '').isNotEmpty
         ? settings!.lyricFontName
         : null;

@@ -34,3 +34,8 @@ jobs:
       # 覆盖，避免「更新一次沉底一次」这类回归
       - name: Plugin order test
         run: flutter test test/plugin_order_test.dart
+
+      # 歌词附加轨对齐是纯函数：译文/罗马音必须落在正确主行、前缀不能串轨，
+      # 出错会让粤语粤拼顶掉中文译文，必须由 CI 守住
+      - name: Lyric aux track test
+        run: flutter test test/lyrics_translation_align_test.dart

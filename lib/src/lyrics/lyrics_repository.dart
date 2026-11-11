@@ -75,7 +75,8 @@ class LyricsRepository {
   }
 
   Future<String> fetchPayloadJson(QueueItem item) {
-    final key = _lyricsCacheKey(item.path, _wantsRomaji);
+    final wantRomaji = _wantsRomaji;
+    final key = _lyricsCacheKey(item.path, wantRomaji);
     final cached = _payloadCache[key];
     if (cached != null) return Future.value(cached);
     final inflight = _inflightPayload[key];
@@ -83,6 +84,7 @@ class LyricsRepository {
     // 因等原生接口超时而「暂时没有罗马音」的载荷不进缓存：
     // 否则这首歌在缓存有效期内会一直缺罗马音，只能靠重开开关补救。
     var romajiDegraded = false;
+    final sw = Stopwatch()..start();
     final future = _fetchLyricsJson(
       item,
       onRomajiMissing: () => romajiDegraded = true,
@@ -93,6 +95,12 @@ class LyricsRepository {
           _payloadCache.remove(_payloadCache.keys.first);
         }
       }
+      // 「切歌后歌要等很久」的现场取证：耗时、载荷大小、是否降级一目了然。
+      AppLog.debug(
+        'lyric',
+        '载荷耗时 ${sw.elapsedMilliseconds}ms len=${payload.length} '
+            'romaji=$wantRomaji degraded=$romajiDegraded',
+      );
       return payload;
     }).whenComplete(() => _inflightPayload.remove(key));
     _inflightPayload[key] = future;

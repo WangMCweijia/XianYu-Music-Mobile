@@ -661,6 +661,29 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
         }
       }
 
+      // 本地库里没有歌词（老版本下载没落库、或只剩同名 .lrc 却没被读到）：
+      // 交给仓库层按在线身份兜底一次。桌面/悬浮歌词走的是同一条路径，
+      // 不补这一步就会出现「桌面有词、播放页空着」。
+      if (jsonStr.isEmpty || jsonStr == 'null') {
+        final repoLines = await ref
+            .read(lyricsRepositoryProvider)
+            .fetchLyrics(item);
+        final viewLines = _lyricLinesToViewItems(repoLines);
+        if (viewLines.isNotEmpty && mounted) {
+          _cacheLyrics(item.path, viewLines);
+          setState(() {
+            _lines = viewLines;
+            _loading = false;
+          });
+          _reportRomaji();
+          _lastActiveIndex = -1;
+          _renderActiveIndex = -1;
+          _pendingCenterJump = true;
+          _autoScrollToActiveLine(force: true);
+          return;
+        }
+      }
+
       if (mounted) {
         setState(() {
           _lines = [];

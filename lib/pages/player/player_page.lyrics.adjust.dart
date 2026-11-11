@@ -108,7 +108,8 @@ class _LyricsAdjustDialogState extends ConsumerState<_LyricsAdjustDialog> {
           icon: Icons.abc_rounded,
           label: tr('罗马音'),
           value: showRomaji,
-          enabled: widget.hasRomaji,
+          // 不按「当前这首有没有罗马音」禁用：罗马音是按开关状态决定要不要
+          // 去取的，禁用后用户就再也打不开它了（换个说法：开关必须始终可点）。
           onChanged: (v) => notifier.setShowLyricsRomaji(v),
         ),
         _TraditionalPlayerLayoutState._buildLyricMenuAction(

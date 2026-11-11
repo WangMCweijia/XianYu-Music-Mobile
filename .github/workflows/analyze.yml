@@ -35,7 +35,7 @@ jobs:
       - name: Plugin order test
         run: flutter test test/plugin_order_test.dart
 
-      # 歌词附加轨对齐是纯函数：译文/罗马音必须落在正确主行、前缀不能串轨，
-      # 出错会让粤语粤拼顶掉中文译文，必须由 CI 守住
+      # 歌词附加轨是纯函数：译文对齐不能串行，罗马音按时间戳注入 `romaji` 字段
+      # 而不是拼进主文（拼进主文会被解析器按脚本特征猜成译文，届时开关失效）
       - name: Lyric aux track test
         run: flutter test test/lyrics_translation_align_test.dart

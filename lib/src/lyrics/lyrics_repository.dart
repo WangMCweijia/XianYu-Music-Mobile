@@ -23,9 +23,13 @@ const int _lyricsCacheMax = 24;
 
 final Map<String, String> _payloadCache = {};
 
-/// 本地曲目补抓到的罗马音轨（空串=已确认取不到，避免反复搜）。
+/// 本地曲目补抓到的罗马音轨，值为 (轨道文本, 写入时刻毫秒)。
 /// 键带歌名歌手：下载目录里同名文件换了歌也不会串味。
-final Map<String, String> _localRomajiCache = {};
+///
+/// 取不到（空串）只缓存很短时间：离线时试过一次，联网后必须能自己好起来 ——
+/// 永久缓存空结果会让人以为「修了还是没声」，比慢一点更糟。
+final Map<String, (String, int)> _localRomajiCache = {};
+const int _localRomajiMissTtlMs = 60 * 1000;
 
 /// 同一曲目的载荷抓取合并成一个 Future。
 ///
@@ -312,7 +316,12 @@ class LyricsRepository {
     // 罗马音轨，拿到后按时间戳注入，和在线歌曲走同一个 [injectRomajiIntoPayload]。
     if (!_wantsRomaji || local.contains('"romaji"')) return local;
     final romajiTrack = await _localRomajiTrack(item);
-    if (romajiTrack.isEmpty) return local;
+    if (romajiTrack.isEmpty) {
+      // 这次没补到（离线 / 没匹配到）就不让载荷进缓存，
+      // 联网后重新取歌词能自己补上。
+      onRomajiMissing?.call();
+      return local;
+    }
     return _withRomaji(local, romajiTrack, true);
   }
 
@@ -320,8 +329,12 @@ class LyricsRepository {
   /// 主歌词照常显示，不影响播放。
   Future<String> _localRomajiTrack(QueueItem item) async {
     final key = '${item.path}|${item.title}|${item.artist}';
-    final cached = _localRomajiCache[key];
-    if (cached != null) return cached;
+    final hit = _localRomajiCache[key];
+    if (hit != null) {
+      final fresh = hit.$1.isNotEmpty ||
+          DateTime.now().millisecondsSinceEpoch - hit.$2 < _localRomajiMissTtlMs;
+      if (fresh) return hit.$1;
+    }
 
     var track = '';
     try {
@@ -338,7 +351,7 @@ class LyricsRepository {
       AppLog.warn('lyric', '本地罗马音补抓异常: $e');
     }
     if (_localRomajiCache.length > _lyricsCacheMax) _localRomajiCache.clear();
-    _localRomajiCache[key] = track;
+    _localRomajiCache[key] = (track, DateTime.now().millisecondsSinceEpoch);
     AppLog.debug(
       'lyric',
       '本地罗马音: title=${item.title} len=${track.length}',
@@ -351,7 +364,7 @@ class LyricsRepository {
   Future<String> _romajiTrackFromOnline(QueueItem item) async {
     try {
       final native = await fetchNativeLyricResult(item).timeout(
-        const Duration(seconds: 6),
+        const Duration(seconds: 4),
         onTimeout: () => null,
       );
       final r = (native?['rlyric'] ?? '').trim();
@@ -388,7 +401,7 @@ class LyricsRepository {
       final service = PluginSearchService(engine, manager.sources);
       final all = await service
           .searchAll(keyword, limit: 10)
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 5));
       for (final (ps, items) in all) {
         for (final r in items) {
           if (!_sameSongField(item.artist, r.singer)) continue;

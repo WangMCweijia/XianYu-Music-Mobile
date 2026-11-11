@@ -23,6 +23,10 @@ const int _lyricsCacheMax = 24;
 
 final Map<String, String> _payloadCache = {};
 
+/// 本地曲目补抓到的罗马音轨（空串=已确认取不到，避免反复搜）。
+/// 键带歌名歌手：下载目录里同名文件换了歌也不会串味。
+final Map<String, String> _localRomajiCache = {};
+
 /// 同一曲目的载荷抓取合并成一个 Future。
 ///
 /// 播放页、桌面/锁屏歌词桥、悬浮歌词、状态栏歌词、在线预缓存会几乎同时请求
@@ -301,7 +305,109 @@ class LyricsRepository {
       return '';
     }
     final dbPath = await _ref.read(dbPathProvider.future);
-    return getSongLyricsPayload(dbPath: dbPath, path: item.path);
+    final local = await getSongLyricsPayload(dbPath: dbPath, path: item.path);
+    if (local.isEmpty || local == 'null') return local;
+    // 本地歌词是下载/导入时存下来的主歌词，本身没有罗马音 —— 以前走到这里
+    // 就直接返回，开关打开也没有东西可显示。这里补一路：按曲目身份去在线取
+    // 罗马音轨，拿到后按时间戳注入，和在线歌曲走同一个 [injectRomajiIntoPayload]。
+    if (!_wantsRomaji || local.contains('"romaji"')) return local;
+    final romajiTrack = await _localRomajiTrack(item);
+    if (romajiTrack.isEmpty) return local;
+    return _withRomaji(local, romajiTrack, true);
+  }
+
+  /// 本地曲目的罗马音轨。取不到（离线、匹配不到同曲）就返回空串，
+  /// 主歌词照常显示，不影响播放。
+  Future<String> _localRomajiTrack(QueueItem item) async {
+    final key = '${item.path}|${item.title}|${item.artist}';
+    final cached = _localRomajiCache[key];
+    if (cached != null) return cached;
+
+    var track = '';
+    try {
+      var probe = item;
+      // 早期版本本地化时把 onlineSongJson 一并丢了，队列里剩下的只有
+      // 歌名/歌手，只能去在线搜一首同曲来充当「曲目身份」。
+      if (probe.onlineSongJson == null && probe.onlineInfoJson == null) {
+        probe = (await _searchRomajiSource(item)) ?? item;
+      }
+      if (probe.onlineSongJson != null || probe.onlineInfoJson != null) {
+        track = await _romajiTrackFromOnline(probe);
+      }
+    } catch (e) {
+      AppLog.warn('lyric', '本地罗马音补抓异常: $e');
+    }
+    if (_localRomajiCache.length > _lyricsCacheMax) _localRomajiCache.clear();
+    _localRomajiCache[key] = track;
+    AppLog.debug(
+      'lyric',
+      '本地罗马音: title=${item.title} len=${track.length}',
+    );
+    return track;
+  }
+
+  /// 罗马音轨只有两个来源：原生歌词接口（官方 rlyric）和插件返回的 rlyric。
+  /// 原生优先 —— 它直连平台歌词接口，不占插件运行时那把串行锁。
+  Future<String> _romajiTrackFromOnline(QueueItem item) async {
+    try {
+      final native = await fetchNativeLyricResult(item).timeout(
+        const Duration(seconds: 6),
+        onTimeout: () => null,
+      );
+      final r = (native?['rlyric'] ?? '').trim();
+      if (r.isNotEmpty) return r;
+    } catch (e) {
+      AppLog.debug('lyric', '本地罗马音: 原生接口失败 $e');
+    }
+    try {
+      final plugin = await _fetchPluginLyric(item);
+      var r = (plugin?['rlyric'] as String?)?.trim() ?? '';
+      if (r.isEmpty) return '';
+      if (pluginLyricLooksEncrypted(r)) {
+        final dt = await decryptEncryptedLyric(r);
+        r = (dt ?? '').trim();
+      }
+      return r;
+    } catch (e) {
+      AppLog.debug('lyric', '本地罗马音: 插件失败 $e');
+      return '';
+    }
+  }
+
+  /// 按歌名+歌手在在线源里找同曲，给「本地化时丢了在线身份」的老曲目兜底。
+  /// 必须校验歌手与时长：同名歌太多，取第一条会把罗马音配到别人身上，
+  /// 那种错配比没有罗马音更难发现。
+  Future<QueueItem?> _searchRomajiSource(QueueItem item) async {
+    final name = item.title.trim();
+    if (name.isEmpty) return null;
+    final keyword =
+        item.artist.trim().isEmpty ? name : '$name ${item.artist.trim()}';
+    try {
+      final manager = _ref.read(pluginManagerProvider);
+      final engine = await _ref.read(pluginEngineProvider.future);
+      final service = PluginSearchService(engine, manager.sources);
+      final all = await service
+          .searchAll(keyword, limit: 10)
+          .timeout(const Duration(seconds: 8));
+      for (final (ps, items) in all) {
+        for (final r in items) {
+          if (!_sameSongField(item.artist, r.singer)) continue;
+          if (!_sameSongField(item.title, r.name)) continue;
+          final qi = service.toQueueItem(ps, r);
+          if (item.durationMs > 0 &&
+              qi.durationMs > 0 &&
+              (qi.durationMs - item.durationMs).abs() > 3000) {
+            continue;
+          }
+          AppLog.info('lyric', '本地罗马音: 在线匹配 ${qi.title} - ${qi.artist}');
+          return qi;
+        }
+      }
+      AppLog.debug('lyric', '本地罗马音: 无在线匹配 keyword=$keyword');
+    } catch (e) {
+      AppLog.warn('lyric', '本地罗马音: 在线搜索失败 $e');
+    }
+    return null;
   }
 
   /// 拉取 DLNA 直传歌词原文（桌面端 httpd 伺服的纯文本）。
@@ -619,6 +725,25 @@ List<(int, String)> _parseAuxTrackEntries(String text) {
     entries.add((ms, body));
   }
   return entries;
+}
+
+/// 歌名/歌手比对前的归一化：去括号补充、去标点与空白、统一小写。
+/// 只服务「找同曲」这一件事，宁可漏判也不要错配。
+String _normSongField(String s) {
+  var t = s.toLowerCase();
+  t = t.replaceAll(RegExp(r'[\(（\[【].*?[\)）\]】]'), ' ');
+  t = t.replaceAll(RegExp(r'[\s\-_·•,，、/&+!！?？.。:：]'), '');
+  return t;
+}
+
+/// 两个歌名/歌手是否算同一首：完全相等，或一方包含另一方
+/// （「周杰伦」vs「周杰伦/杨瑞代」、「某曲」vs「某曲 (Live)」这类写法）。
+/// 任一方为空视为不可比 —— 空歌手匹配一切，会把罗马音配到随便哪首歌上。
+bool _sameSongField(String a, String b) {
+  final x = _normSongField(a);
+  final y = _normSongField(b);
+  if (x.isEmpty || y.isEmpty) return false;
+  return x == y || x.contains(y) || y.contains(x);
 }
 
 int _displayLineMs(Map<String, dynamic> line) {

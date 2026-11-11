@@ -45,12 +45,39 @@ const Duration _romajiNativeTimeout = Duration(milliseconds: 1500);
 /// 起播解析期间留给播放地址的最长时间（见 `_yieldToPlayback`）。
 const Duration _playbackYieldLimit = Duration(milliseconds: 1800);
 
-/// 本地歌词（Rust 侧数据库）读取上限。卡住时不设上限会造成整条取词链
+/// 本地歌词（内嵌标签 / 同名 .lrc）读取上限。卡住时不设上限会造成整条取词链
 /// 永不返回 —— 桌面歌词会一直停在上一首的内容上，比「暂无歌词」难查得多。
-const Duration _localLyricTimeout = Duration(seconds: 3);
+const Duration _localLyricTimeout = Duration(seconds: 5);
 
 /// 本地曲目在库里没歌词时，按在线身份补取的上限。
-const Duration _localOnlineFallbackTimeout = Duration(seconds: 8);
+/// 含「没有在线身份时先按歌名歌手搜索同曲」这一步（搜索自身 3s 上限）。
+const Duration _localOnlineFallbackTimeout = Duration(seconds: 12);
+
+/// 本地曲目按歌名歌手匹配到的在线同曲，值为 (曲目, 写入时刻毫秒)。
+/// 匹配不到也缓存：离线时反复搜索只会白占插件串行锁。
+final Map<String, (QueueItem?, int)> _localMatchCache = {};
+const int _localMatchTtlMs = 10 * 60 * 1000;
+
+/// 载荷里是否真有歌词行。
+///
+/// 关键：本地「没有歌词」时 Rust 侧返回的是 `{"displayLines":[]}` 这种**非空**
+/// JSON，不是空串。只判 `isEmpty` 会把「空歌词」当成「有歌词」，兜底永远不触发，
+/// 界面就永远停在「暂无歌词」。
+bool _payloadHasLines(String payload) {
+  if (payload.isEmpty || payload == 'null') return false;
+  try {
+    final decoded = jsonDecode(payload);
+    if (decoded is! Map) return false;
+    for (final key in const ['displayLines', 'display_lines', 'lines']) {
+      final value = decoded[key];
+      if (value is List && value.isNotEmpty) return true;
+    }
+    return false;
+  } catch (_) {
+    // 解析不了说明不是标准载荷，交给上层按原有逻辑处理
+    return true;
+  }
+}
 
 /// 罗马音开关会改变载荷内容：关着就不注入、也不额外请求原生接口，
 /// 所以缓存必须带上这个维度，否则「先播歌、后开开关」会一直空到换歌。
@@ -107,7 +134,9 @@ class LyricsRepository {
       item,
       onRomajiMissing: () => romajiDegraded = true,
     ).then((payload) {
-      if (!romajiDegraded && payload.isNotEmpty && payload != 'null') {
+      // 只缓存真有歌词行的载荷：`{"displayLines":[]}` 这种「空歌词」也缓存的话，
+      // 兜底与重试都会直接命中它，永远不会再去取。
+      if (!romajiDegraded && _payloadHasLines(payload)) {
         _payloadCache[key] = payload;
         if (_payloadCache.length > _lyricsCacheMax) {
           _payloadCache.remove(_payloadCache.keys.first);
@@ -325,10 +354,10 @@ class LyricsRepository {
             return '';
           },
         );
-    if (local.isEmpty || local == 'null') {
-      // 库里没有这首歌的歌词（老版本下载没落库、或只留了同名 .lrc）：
-      // 只要还带着在线曲目身份，就按 id 去在线取一次 —— 否则本地歌在
-      // 桌面歌词和歌词页都只能是一句「暂无歌词」。
+    if (!_payloadHasLines(local)) {
+      // 本地没有可用歌词：内嵌标签和同名 .lrc 都没有（Rust 侧返回的是
+      // `{"displayLines":[]}`，**不是空串** —— 只判 isEmpty 会让兜底永不触发）。
+      AppLog.info('lyric', '本地歌词为空: ${item.title}');
       return _fetchOnlineFallback(item);
     }
     // 本地歌词是下载/导入时存下来的主歌词，本身没有罗马音 —— 以前走到这里
@@ -351,20 +380,34 @@ class LyricsRepository {
   bool _payloadHasRomaji(String payload) =>
       RegExp(r'"romaji"\s*:\s*"[^"]').hasMatch(payload);
 
-  /// 本地曲目在库里没有歌词时的在线兜底。
+  /// 本地曲目没有可用歌词时的在线兜底。
   ///
-  /// 只对携带在线身份（`onlineSongJson`）的曲目生效：`withLocalFile` 现在会
-  /// 保留这个字段，下载过的歌都认得自己是谁。取不到就返回空串，
-  /// 不影响本地播放，也不会把错配的歌词塞进来。
+  /// 两级：先看有没有在线身份（下载来的歌带 `onlineSongJson`，`withLocalFile`
+  /// 会保留）；没有就按歌名+歌手匹配一首同曲。匹配要过歌手/歌名归一化互相包含
+  /// 且时长差 ≤3s —— 同名歌太多，取第一条会把歌词配到别人身上，那种错配比
+  /// 没有歌词更难发现。取不到就返回空串，不影响本地播放。
   Future<String> _fetchOnlineFallback(QueueItem item) async {
-    final online = item.onlineSongJson;
-    if (online == null || online.isEmpty) return '';
+    var probe = item;
+    if (!_hasOnlineIdentity(probe)) {
+      probe = (await _searchOnlineSong(item)) ?? item;
+    }
+    if (!_hasOnlineIdentity(probe)) {
+      AppLog.info('lyric', '本地歌词缺失且无在线同曲: ${item.title}');
+      return '';
+    }
     try {
-      AppLog.info('lyric', '本地歌词缺失，按在线身份补取: ${item.title}');
-      final payload = await _fetchLyricsJson(item, forceOnline: true).timeout(
+      AppLog.info(
+        'lyric',
+        '本地歌词缺失，按在线身份补取: ${item.title} -> ${probe.title}/${probe.artist}',
+      );
+      final payload = await _fetchLyricsJson(probe, forceOnline: true).timeout(
         _localOnlineFallbackTimeout,
         onTimeout: () => '',
       );
+      if (!_payloadHasLines(payload)) {
+        AppLog.debug('lyric', '本地歌词在线兜底为空: title=${item.title}');
+        return '';
+      }
       AppLog.debug(
         'lyric',
         '本地歌词在线兜底: title=${item.title} len=${payload.length}',
@@ -374,6 +417,24 @@ class LyricsRepository {
       AppLog.warn('lyric', '本地歌词在线兜底失败: $e');
       return '';
     }
+  }
+
+  bool _hasOnlineIdentity(QueueItem item) =>
+      (item.onlineSongJson?.isNotEmpty ?? false) || item.onlineInfoJson != null;
+
+  /// 按歌名+歌手找在线同曲，结果（含「没找到」）缓存 10 分钟。
+  /// 离线时反复搜索只会白占插件串行锁，还会拖慢起播。
+  Future<QueueItem?> _searchOnlineSong(QueueItem item) async {
+    final key = '${item.path}|${item.title}|${item.artist}';
+    final hit = _localMatchCache[key];
+    if (hit != null &&
+        DateTime.now().millisecondsSinceEpoch - hit.$2 < _localMatchTtlMs) {
+      return hit.$1;
+    }
+    final found = await _searchOnlineSameSong(item);
+    if (_localMatchCache.length > _lyricsCacheMax) _localMatchCache.clear();
+    _localMatchCache[key] = (found, DateTime.now().millisecondsSinceEpoch);
+    return found;
   }
 
   /// 本地曲目的罗马音轨。取不到（离线、匹配不到同曲）就返回空串，
@@ -392,10 +453,10 @@ class LyricsRepository {
       var probe = item;
       // 早期版本本地化时把 onlineSongJson 一并丢了，队列里剩下的只有
       // 歌名/歌手，只能去在线搜一首同曲来充当「曲目身份」。
-      if (probe.onlineSongJson == null && probe.onlineInfoJson == null) {
-        probe = (await _searchRomajiSource(item)) ?? item;
+      if (!_hasOnlineIdentity(probe)) {
+        probe = (await _searchOnlineSong(item)) ?? item;
       }
-      if (probe.onlineSongJson != null || probe.onlineInfoJson != null) {
+      if (_hasOnlineIdentity(probe)) {
         // 罗马音是「锦上添花」：它拖住整条取词链的代价是本地歌前几十秒没有
         // 任何歌词（桌面歌词会在 6 秒后按超时出结果再接重试）。这里给硬上限。
         track = await _romajiTrackFromOnline(probe).timeout(
@@ -446,10 +507,11 @@ class LyricsRepository {
     }
   }
 
-  /// 按歌名+歌手在在线源里找同曲，给「本地化时丢了在线身份」的老曲目兜底。
-  /// 必须校验歌手与时长：同名歌太多，取第一条会把罗马音配到别人身上，
-  /// 那种错配比没有罗马音更难发现。
-  Future<QueueItem?> _searchRomajiSource(QueueItem item) async {
+  /// 按歌名+歌手在在线源里找同曲，供「本地化时丢了在线身份」的老曲目使用：
+  /// 既用来补罗马音，也用来给「本地完全没有歌词」的曲目取主歌词。
+  /// 必须校验歌手与时长：同名歌太多，取第一条会把歌词配到别人身上，
+  /// 那种错配比没有歌词更难发现。
+  Future<QueueItem?> _searchOnlineSameSong(QueueItem item) async {
     final name = item.title.trim();
     if (name.isEmpty) return null;
     final keyword =
@@ -460,7 +522,7 @@ class LyricsRepository {
       final service = PluginSearchService(engine, manager.sources);
       final all = await service
           .searchAll(keyword, limit: 10)
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 5));
       for (final (ps, items) in all) {
         for (final r in items) {
           if (!_sameSongField(item.artist, r.singer)) continue;
@@ -471,13 +533,13 @@ class LyricsRepository {
               (qi.durationMs - item.durationMs).abs() > 3000) {
             continue;
           }
-          AppLog.info('lyric', '本地罗马音: 在线匹配 ${qi.title} - ${qi.artist}');
+          AppLog.info('lyric', '本地曲目在线匹配: ${qi.title} - ${qi.artist}');
           return qi;
         }
       }
-      AppLog.debug('lyric', '本地罗马音: 无在线匹配 keyword=$keyword');
+      AppLog.debug('lyric', '本地曲目: 无在线匹配 keyword=$keyword');
     } catch (e) {
-      AppLog.warn('lyric', '本地罗马音: 在线搜索失败 $e');
+      AppLog.warn('lyric', '本地曲目: 在线搜索失败 $e');
     }
     return null;
   }

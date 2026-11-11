@@ -1343,25 +1343,22 @@ pub(crate) fn parse_manual_lrc_like(raw: &str) -> Vec<ParsedLine> {
     finalize_lrc_blank_lines(lines)
 }
 
-/// 把 QRC 尾部附加 LRC 按角色挂回主行。
-///
-/// 插件链路会把「QRC XML + 译文 LRC + 罗马音 LRC」拼成一份 raw，而 `parse_qrc`
-/// 只消费 XML、静默丢弃尾部。这里按行级显式角色分流：
-/// `【罗马音】/[roma]` 等前缀写 `roman_text`，其余按译文写 `translated_text`，
-/// 两条附加轨互不覆盖（此前罗马音会被误当译文塞进 translated_text）。
-pub(crate) fn attach_lrc_aux_lines(lines: &mut [ParsedLine], tail: &str) {
-    let aux_lines = parse_manual_lrc_like(tail);
-    if aux_lines.is_empty() || lines.is_empty() {
+/// 把主歌词 XML 尾部的译文 LRC 行按时间戳就近关联到主行 translated_text
+/// （QQ/Baka 链路：解密 QRC XML + 插件译文 LRC 拼成一份 raw）。仅填空位不
+/// 覆盖已有翻译；时间差超过 2s 视为对不上、丢弃。
+pub(crate) fn attach_lrc_translation_lines(lines: &mut [ParsedLine], tail: &str) {
+    let translation_lines = parse_manual_lrc_like(tail);
+    if translation_lines.is_empty() || lines.is_empty() {
         return;
     }
-    for aux in &aux_lines {
-        let text = aux.text.trim();
+    for translation in &translation_lines {
+        let text = translation.text.trim();
         if text.is_empty() {
             continue;
         }
         let mut best: Option<(usize, i64)> = None;
         for (index, line) in lines.iter().enumerate() {
-            let delta = (line.start_ms as i64 - aux.start_ms as i64).abs();
+            let delta = (line.start_ms as i64 - translation.start_ms as i64).abs();
             if delta > 2000 {
                 continue;
             }
@@ -1369,29 +1366,15 @@ pub(crate) fn attach_lrc_aux_lines(lines: &mut [ParsedLine], tail: &str) {
                 best = Some((index, delta));
             }
         }
-        let Some((index, _)) = best else {
-            continue;
-        };
-        let is_roman = aux.explicit_role == Some(ExplicitLineRole::Roman);
-        let line = &mut lines[index];
-        if is_roman {
-            let empty = line
-                .roman_text
-                .as_deref()
-                .map(str::trim)
-                .map(str::is_empty)
-                .unwrap_or(true);
-            if empty {
-                line.roman_text = Some(text.to_string());
-            }
-        } else {
-            let empty = line
+        if let Some((index, _)) = best {
+            let line = &mut lines[index];
+            let is_empty = line
                 .translated_text
                 .as_deref()
                 .map(str::trim)
                 .map(str::is_empty)
                 .unwrap_or(true);
-            if empty {
+            if is_empty {
                 line.translated_text = Some(text.to_string());
             }
         }
@@ -1492,7 +1475,7 @@ pub(crate) fn parse_raw_lyrics(raw: &str) -> Vec<ParsedLine> {
     if !qrc_candidate.is_empty() {
         if let Some(end) = normalized.find("</QrcInfos>") {
             let tail = &normalized[end + "</QrcInfos>".len()..];
-            attach_lrc_aux_lines(&mut qrc_candidate, tail);
+            attach_lrc_translation_lines(&mut qrc_candidate, tail);
         }
     }
     collect_candidate(

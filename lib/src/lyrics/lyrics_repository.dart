@@ -45,6 +45,13 @@ const Duration _romajiNativeTimeout = Duration(milliseconds: 1500);
 /// 起播解析期间留给播放地址的最长时间（见 `_yieldToPlayback`）。
 const Duration _playbackYieldLimit = Duration(milliseconds: 1800);
 
+/// 本地歌词（Rust 侧数据库）读取上限。卡住时不设上限会造成整条取词链
+/// 永不返回 —— 桌面歌词会一直停在上一首的内容上，比「暂无歌词」难查得多。
+const Duration _localLyricTimeout = Duration(seconds: 3);
+
+/// 本地曲目在库里没歌词时，按在线身份补取的上限。
+const Duration _localOnlineFallbackTimeout = Duration(seconds: 8);
+
 /// 罗马音开关会改变载荷内容：关着就不注入、也不额外请求原生接口，
 /// 所以缓存必须带上这个维度，否则「先播歌、后开开关」会一直空到换歌。
 String _lyricsCacheKey(String path, bool wantRomaji) =>
@@ -164,8 +171,9 @@ class LyricsRepository {
   Future<String> _fetchLyricsJson(
     QueueItem item, {
     void Function()? onRomajiMissing,
+    bool forceOnline = false,
   }) async {
-    if (item.isOnline) {
+    if (item.isOnline || forceOnline) {
       await _yieldToPlayback();
       Future<Map<String, dynamic>?>? nativePending;
       // 同一个原生请求只发一次；不同调用点只是等待方式不同（有没有上限）。
@@ -309,12 +317,24 @@ class LyricsRepository {
       return '';
     }
     final dbPath = await _ref.read(dbPathProvider.future);
-    final local = await getSongLyricsPayload(dbPath: dbPath, path: item.path);
-    if (local.isEmpty || local == 'null') return local;
+    final local = await getSongLyricsPayload(dbPath: dbPath, path: item.path)
+        .timeout(
+          _localLyricTimeout,
+          onTimeout: () {
+            AppLog.warn('lyric', '本地歌词读取超时: ${item.title}');
+            return '';
+          },
+        );
+    if (local.isEmpty || local == 'null') {
+      // 库里没有这首歌的歌词（老版本下载没落库、或只留了同名 .lrc）：
+      // 只要还带着在线曲目身份，就按 id 去在线取一次 —— 否则本地歌在
+      // 桌面歌词和歌词页都只能是一句「暂无歌词」。
+      return _fetchOnlineFallback(item);
+    }
     // 本地歌词是下载/导入时存下来的主歌词，本身没有罗马音 —— 以前走到这里
     // 就直接返回，开关打开也没有东西可显示。这里补一路：按曲目身份去在线取
     // 罗马音轨，拿到后按时间戳注入，和在线歌曲走同一个 [injectRomajiIntoPayload]。
-    if (!_wantsRomaji || local.contains('"romaji"')) return local;
+    if (!_wantsRomaji || _payloadHasRomaji(local)) return local;
     final romajiTrack = await _localRomajiTrack(item);
     if (romajiTrack.isEmpty) {
       // 这次没补到（离线 / 没匹配到）就不让载荷进缓存，
@@ -323,6 +343,37 @@ class LyricsRepository {
       return local;
     }
     return _withRomaji(local, romajiTrack, true);
+  }
+
+  /// 载荷里是否已有**非空**罗马音。
+  /// 以前只判断是否出现 `"romaji"` 这个键，一个空串也被当成「有」，
+  /// 于是这首歌永远不再补抓。
+  bool _payloadHasRomaji(String payload) =>
+      RegExp(r'"romaji"\s*:\s*"[^"]').hasMatch(payload);
+
+  /// 本地曲目在库里没有歌词时的在线兜底。
+  ///
+  /// 只对携带在线身份（`onlineSongJson`）的曲目生效：`withLocalFile` 现在会
+  /// 保留这个字段，下载过的歌都认得自己是谁。取不到就返回空串，
+  /// 不影响本地播放，也不会把错配的歌词塞进来。
+  Future<String> _fetchOnlineFallback(QueueItem item) async {
+    final online = item.onlineSongJson;
+    if (online == null || online.isEmpty) return '';
+    try {
+      AppLog.info('lyric', '本地歌词缺失，按在线身份补取: ${item.title}');
+      final payload = await _fetchLyricsJson(item, forceOnline: true).timeout(
+        _localOnlineFallbackTimeout,
+        onTimeout: () => '',
+      );
+      AppLog.debug(
+        'lyric',
+        '本地歌词在线兜底: title=${item.title} len=${payload.length}',
+      );
+      return payload;
+    } catch (e) {
+      AppLog.warn('lyric', '本地歌词在线兜底失败: $e');
+      return '';
+    }
   }
 
   /// 本地曲目的罗马音轨。取不到（离线、匹配不到同曲）就返回空串，
@@ -345,7 +396,15 @@ class LyricsRepository {
         probe = (await _searchRomajiSource(item)) ?? item;
       }
       if (probe.onlineSongJson != null || probe.onlineInfoJson != null) {
-        track = await _romajiTrackFromOnline(probe);
+        // 罗马音是「锦上添花」：它拖住整条取词链的代价是本地歌前几十秒没有
+        // 任何歌词（桌面歌词会在 6 秒后按超时出结果再接重试）。这里给硬上限。
+        track = await _romajiTrackFromOnline(probe).timeout(
+          const Duration(seconds: 4),
+          onTimeout: () {
+            AppLog.debug('lyric', '本地罗马音: 超时放弃 title=${item.title}');
+            return '';
+          },
+        );
       }
     } catch (e) {
       AppLog.warn('lyric', '本地罗马音补抓异常: $e');
@@ -401,7 +460,7 @@ class LyricsRepository {
       final service = PluginSearchService(engine, manager.sources);
       final all = await service
           .searchAll(keyword, limit: 10)
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 3));
       for (final (ps, items) in all) {
         for (final r in items) {
           if (!_sameSongField(item.artist, r.singer)) continue;

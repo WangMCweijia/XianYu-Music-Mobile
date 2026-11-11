@@ -22,6 +22,11 @@ const int _lyricsCacheMax = 24;
 
 final Map<String, String> _payloadCache = {};
 
+/// 罗马音开关会改变载荷内容：关着就不注入、也不额外请求原生接口，
+/// 所以缓存必须带上这个维度，否则「先播歌、后开开关」会一直空到换歌。
+String _lyricsCacheKey(String path, bool wantRomaji) =>
+    wantRomaji ? '$path|romaji' : path;
+
 void _cacheLyrics(String path, List<LyricLine> lines) {
   if (path.isEmpty || lines.isEmpty) return;
   _lyricsCache[path] = (I18n.mode, lines);
@@ -36,10 +41,11 @@ class LyricsRepository {
   final Ref _ref;
 
   Future<List<LyricLine>> fetchLyrics(QueueItem item) async {
-    final cached = _lyricsCache[item.path];
+    final key = _lyricsCacheKey(item.path, _wantsRomaji);
+    final cached = _lyricsCache[key];
     if (cached != null && cached.$2.isNotEmpty) {
       if (cached.$1 == I18n.mode) return cached.$2;
-      _lyricsCache.remove(item.path);
+      _lyricsCache.remove(key);
     }
     try {
       final jsonStr = await fetchPayloadJson(item);
@@ -47,7 +53,7 @@ class LyricsRepository {
       final parsed = await compute(_parseLyricsJson, jsonStr);
       final lines = await compute(_normalizeBoundaries, parsed);
       final localized = localizeLyricLines(lines);
-      if (localized.isNotEmpty) _cacheLyrics(item.path, localized);
+      if (localized.isNotEmpty) _cacheLyrics(key, localized);
       return localized;
     } catch (e) {
       AppLog.warn('lyric', '歌词载荷处理异常: $e');
@@ -56,11 +62,12 @@ class LyricsRepository {
   }
 
   Future<String> fetchPayloadJson(QueueItem item) async {
-    final cached = _payloadCache[item.path];
+    final key = _lyricsCacheKey(item.path, _wantsRomaji);
+    final cached = _payloadCache[key];
     if (cached != null) return cached;
     final payload = await _fetchLyricsJson(item);
     if (payload.isNotEmpty && payload != 'null') {
-      _payloadCache[item.path] = payload;
+      _payloadCache[key] = payload;
       if (_payloadCache.length > _lyricsCacheMax) {
         _payloadCache.remove(_payloadCache.keys.first);
       }
@@ -76,15 +83,32 @@ class LyricsRepository {
         (settings?.floatingLyricsShowRomanization ?? false);
   }
 
+  /// 解析完成后再把罗马音轨按时间戳注入载荷。
+  /// 开关关闭或没有罗马音轨时原样返回，主歌词链路完全不受影响。
+  String _withRomaji(String payload, String romajiTrack, bool wantRomaji) {
+    if (!wantRomaji || romajiTrack.isEmpty) return payload;
+    if (payload.isEmpty || payload == 'null') return payload;
+    try {
+      return injectRomajiIntoPayload(payload, romajiTrack);
+    } catch (e) {
+      AppLog.warn('lyric', '罗马音注入失败: $e');
+      return payload;
+    }
+  }
+
   Future<String> _fetchLyricsJson(QueueItem item) async {
     if (item.isOnline) {
       Map<String, dynamic>? cachedNative;
       var nativeFetched = false;
-      Future<Map<String, dynamic>?> nativeOnce() async {
-        if (!nativeFetched) {
-          nativeFetched = true;
-          cachedNative = await fetchNativeLyricResult(item);
-        }
+      Future<Map<String, dynamic>?> nativeOnce({Duration? timeout}) async {
+        if (nativeFetched) return cachedNative;
+        nativeFetched = true;
+        final pending = fetchNativeLyricResult(item);
+        // 只有「主歌词已经拿到、原生接口纯粹用来补罗马音」时才设上限，
+        // 免得一个慢请求把整页歌词吊在那儿。
+        cachedNative = timeout == null
+            ? await pending
+            : await pending.timeout(timeout, onTimeout: () => null);
         return cachedNative;
       }
 
@@ -93,7 +117,7 @@ class LyricsRepository {
       if (pluginRes != null) {
         final mainText = pickPluginMainText(pluginRes);
         final tlyric = (pluginRes['tlyric'] as String?)?.trim() ?? '';
-        final rlyric = (pluginRes['rlyric'] as String?)?.trim() ?? '';
+        var rlyric = (pluginRes['rlyric'] as String?)?.trim() ?? '';
         final encrypted = pluginLyricLooksEncrypted(mainText);
         AppLog.debug(
           'lyric',
@@ -110,41 +134,32 @@ class LyricsRepository {
                 translation = alignTranslationToMainLyric(decrypted, dt);
               }
             }
-            var romaji = '';
-            if (rlyric.isNotEmpty) {
-              final rt = pluginLyricLooksEncrypted(rlyric)
-                  ? await decryptEncryptedLyric(rlyric)
-                  : rlyric;
-              if (rt != null && rt.trim().isNotEmpty) {
-                romaji = alignRomanizationToMainLyric(decrypted, rt);
-              }
+            if (rlyric.isNotEmpty && pluginLyricLooksEncrypted(rlyric)) {
+              final rt = await decryptEncryptedLyric(rlyric);
+              rlyric = (rt != null && rt.trim().isNotEmpty) ? rt.trim() : '';
             }
-            return parseLyrics(
-              rawLyrics: composeLyricsRaw(
-                decrypted,
-                translation: translation,
-                romaji: romaji,
-              ),
+            final payload = await parseLyrics(
+              rawLyrics: composePluginLyricsRaw(decrypted, translation),
             );
+            return _withRomaji(payload, rlyric, wantRomaji);
           }
           AppLog.warn('lyric', '插件歌词: 密文解密失败，无可用歌词');
           return '';
         }
         if (mainText.trim().isNotEmpty) {
           var translation = '';
-          var romaji = '';
           if (tlyric.isNotEmpty && !mainText.contains('tlyric')) {
             translation = alignTranslationToMainLyric(mainText, tlyric);
           }
-          if (rlyric.isNotEmpty) {
-            romaji = alignRomanizationToMainLyric(mainText, rlyric);
-          }
+          var romajiTrack = rlyric;
+          final needTranslationNative = translation.isEmpty && tlyric.isEmpty;
+          final needRomajiNative = romajiTrack.isEmpty && wantRomaji;
           // 译文缺失（原有逻辑）或用户要看罗马音而插件没给，才向原生接口补一次。
-          final needNative =
-              (translation.isEmpty && tlyric.isEmpty) ||
-              (romaji.isEmpty && wantRomaji);
-          if (needNative) {
-            final native = await nativeOnce();
+          // 单纯补罗马音时给 3 秒上限，译文兜底保持原样不设限。
+          if (needTranslationNative || needRomajiNative) {
+            final native = await nativeOnce(
+              timeout: needTranslationNative ? null : const Duration(seconds: 3),
+            );
             if (native != null) {
               final nTrans = (native['tlyric'] ?? '').trim();
               final nRoma = (native['rlyric'] ?? '').trim();
@@ -153,18 +168,15 @@ class LyricsRepository {
                   !mainText.contains('tlyric')) {
                 translation = alignTranslationToMainLyric(mainText, nTrans);
               }
-              if (romaji.isEmpty && nRoma.isNotEmpty) {
-                romaji = alignRomanizationToMainLyric(mainText, nRoma);
+              if (romajiTrack.isEmpty && nRoma.isNotEmpty) {
+                romajiTrack = nRoma;
               }
             }
           }
-          return parseLyrics(
-            rawLyrics: composeLyricsRaw(
-              mainText,
-              translation: translation,
-              romaji: romaji,
-            ),
+          final payload = await parseLyrics(
+            rawLyrics: composePluginLyricsRaw(mainText, translation),
           );
+          return _withRomaji(payload, romajiTrack, wantRomaji);
         }
       } else {
         AppLog.debug('lyric', '插件歌词: 无结果');
@@ -176,27 +188,19 @@ class LyricsRepository {
         final t = (native['tlyric'] ?? '').trim();
         final r = (native['rlyric'] ?? '').trim();
         if (lx.isNotEmpty) {
-          return parseLyrics(
-            rawLyrics: composeLyricsRaw(
-              lx,
-              romaji: r.isNotEmpty
-                  ? alignRomanizationToMainLyric(lx, r)
-                  : '',
-            ),
-          );
+          final payload = await parseLyrics(rawLyrics: lx);
+          return _withRomaji(payload, r, wantRomaji);
         }
         if (main.isNotEmpty) {
-          return parseLyrics(
-            rawLyrics: composeLyricsRaw(
-              main,
-              translation: t.isNotEmpty && !main.contains('tlyric')
-                  ? alignTranslationToMainLyric(main, t)
-                  : '',
-              romaji: r.isNotEmpty
-                  ? alignRomanizationToMainLyric(main, r)
-                  : '',
-            ),
+          final payload = await parseLyrics(
+            rawLyrics: t.isNotEmpty && !main.contains('tlyric')
+                ? composePluginLyricsRaw(
+                    main,
+                    alignTranslationToMainLyric(main, t),
+                  )
+                : main,
           );
+          return _withRomaji(payload, r, wantRomaji);
         }
         AppLog.warn('lyric', '原生歌词兜底: 结果主文本为空 keys=${native.keys.toList()}');
       } else {
@@ -493,11 +497,6 @@ String _msToLrcStamp(int ms) {
 /// 译文行前缀，取值须在 Rust detect_explicit_role 的前缀表内，否则进不了翻译轨。
 const _translationMarker = '【翻译】';
 
-/// 罗马音行前缀（日语罗马字、粤语粤拼同走这一轨）。
-/// 同样受 Rust 前缀表约束：写成「罗马音:」或「[roma]」也能识别，
-/// 这里用全角书名号形式，与译文前缀在同一张表里、互不误伤。
-const _romanizationMarker = '【罗马音】';
-
 /// 主文是否为 QRC 内层逐字行（行首「整数,整数」，同 Rust parse_line_header）。
 bool _looksLikeQrcBody(String text) {
   for (final line in text.split('\n')) {
@@ -510,6 +509,10 @@ bool _looksLikeQrcBody(String text) {
 
 /// 组装插件歌词 raw：主文 + 已对齐的译文。
 /// QRC 主文必须补文档外壳：Rust 只在该文本含 `</QrcInfos>` 时才挂载尾部译文 LRC。
+///
+/// 罗马音**不**走这里：解析器要用脚本特征猜「这一行是不是罗马音」，
+/// 猜错就会落进译文槽，届时开关既关不掉、也会因检测不到罗马音轨而一直是禁用态。
+/// 罗马音改由 [injectRomajiIntoPayload] 在解析完成后按时间戳写入 `romaji` 字段。
 String composePluginLyricsRaw(String mainBody, String translationLrc) {
   if (mainBody.isEmpty || translationLrc.isEmpty) {
     return '$mainBody\n$translationLrc';
@@ -527,20 +530,84 @@ String composePluginLyricsRaw(String mainBody, String translationLrc) {
       '$translationLrc';
 }
 
-/// 组装插件歌词 raw：主文 + 已对齐的译文 + 已对齐的罗马音。
-/// 两条附加轨都挂尾部，Rust 按行首角色前缀分流：
-/// 【翻译】进 translated_text，【罗马音】进 roman_text，两轨可以同时存在。
-String composeLyricsRaw(
-  String mainBody, {
-  String translation = '',
-  String romaji = '',
-}) {
-  final aux = <String>[
-    if (translation.trim().isNotEmpty) translation,
-    if (romaji.trim().isNotEmpty) romaji,
-  ].join('\n');
-  if (aux.isEmpty) return mainBody;
-  return composePluginLyricsRaw(mainBody, aux);
+/// 把罗马音轨（日语罗马字 / 粤语粤拼 / 韩语罗马字）解析成「时间戳 + 文本」。
+List<(int, String)> _parseAuxTrackEntries(String text) {
+  final entries = <(int, String)>[];
+  for (final raw in text.split('\n')) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    final ms = _lrcLineStampMs(line);
+    if (ms == null) continue;
+    final qrc = _qrcLineStampPattern.firstMatch(line);
+    final lrc = _lrcLineStampPattern.firstMatch(line);
+    final stripped = qrc != null
+        ? line.substring(qrc.end)
+        : (lrc == null ? line : line.substring(lrc.end));
+    // QQ 的 roma 带逐字时间标注 `(start,dur)`，一并清掉。
+    final body = _cleanLyricText(stripped.trim());
+    if (body.isEmpty) continue;
+    entries.add((ms, body));
+  }
+  return entries;
+}
+
+int _displayLineMs(Map<String, dynamic> line) {
+  final t = line['time'];
+  if (t is num) return (t * 1000).round();
+  final tm = line['timeMs'];
+  if (tm is num) return tm.round();
+  return -1;
+}
+
+/// 把罗马音轨按时间戳写进已解析载荷的 `romaji` 字段。
+///
+/// 只填空位、不改原文、不动译文：命中哪一行由时间戳决定，不依赖脚本特征。
+String injectRomajiIntoPayload(String payloadJson, String romajiTrack) {
+  final entries = _parseAuxTrackEntries(romajiTrack);
+  if (entries.isEmpty) return payloadJson;
+
+  final dynamic decoded;
+  try {
+    decoded = jsonDecode(payloadJson);
+  } catch (_) {
+    return payloadJson;
+  }
+  if (decoded is! Map<String, dynamic>) return payloadJson;
+  final lines = decoded['displayLines'];
+  if (lines is! List || lines.isEmpty) return payloadJson;
+
+  final lineMs = <int>[];
+  for (final item in lines) {
+    lineMs.add(item is Map<String, dynamic> ? _displayLineMs(item) : -1);
+  }
+
+  final joined = <int, List<String>>{};
+  for (final (ms, body) in entries) {
+    var best = -1;
+    var bestDiff = 1 << 62;
+    for (var i = 0; i < lineMs.length; i++) {
+      if (lineMs[i] < 0) continue;
+      final diff = (lineMs[i] - ms).abs();
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = i;
+      }
+    }
+    if (best < 0 || bestDiff > _maxAlignWindowMs) continue;
+    joined.putIfAbsent(best, () => <String>[]).add(body);
+  }
+  if (joined.isEmpty) return payloadJson;
+
+  var changed = false;
+  joined.forEach((index, parts) {
+    final line = lines[index];
+    if (line is! Map<String, dynamic>) return;
+    final existing = (line['romaji'] as String?)?.trim() ?? '';
+    if (existing.isNotEmpty) return;
+    line['romaji'] = parts.join(' ');
+    changed = true;
+  });
+  return changed ? jsonEncode(decoded) : payloadJson;
 }
 
 /// 主歌词里按出现顺序取出的行级时间戳（毫秒）。
@@ -565,18 +632,9 @@ int _alignWindowMs(List<int> stamps, int index) {
 /// 把插件返回的翻译行对齐到主歌词时间轴。
 /// 有时间戳的吸附到最近主行（半行窗口内），其余按剩余行序补，多出的挂最后一行。
 String alignTranslationToMainLyric(String mainContent, String translation) =>
-    _alignAuxTrackToMainLyric(mainContent, translation, _translationMarker);
+    _alignAuxTrackToMainLyric(mainContent, translation);
 
-/// 把罗马音（日语罗马字 / 粤语粤拼）行对齐到主歌词时间轴。
-/// 规则与译文完全一致，只有角色前缀不同 —— Rust 靠前缀把两条附加轨分开。
-String alignRomanizationToMainLyric(String mainContent, String romaji) =>
-    _alignAuxTrackToMainLyric(mainContent, romaji, _romanizationMarker);
-
-String _alignAuxTrackToMainLyric(
-  String mainContent,
-  String auxText,
-  String marker,
-) {
+String _alignAuxTrackToMainLyric(String mainContent, String auxText) {
   final stamps = _mainLineStamps(mainContent);
   final bodies = <String>[];
   final times = <int?>[];
@@ -638,9 +696,8 @@ String _alignAuxTrackToMainLyric(
   for (var i = 0; i < bodies.length; i++) {
     final index = target[i] ?? fallback;
     final stamp = stamps[index];
-    // 附加轨保持行级 LRC + 角色前缀，与 Rust 侧挂载分支的期望一致：
-    // 【翻译】写 translated_text，【罗马音】写 roman_text，两轨互不覆盖。
-    out.add('[${_msToLrcStamp(stamp)}]$marker${bodies[i]}');
+    // 译文保持行级 LRC + 角色前缀，与 Rust 侧挂载分支的期望一致。
+    out.add('[${_msToLrcStamp(stamp)}]$_translationMarker${bodies[i]}');
   }
   return out.join('\n');
 }

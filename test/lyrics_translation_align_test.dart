@@ -10,10 +10,14 @@ import 'package:xianyu_music_mobile/src/lyrics/lyrics_repository.dart';
 ///
 ///     if !qrc_candidate.is_empty() {
 ///         if let Some(end) = normalized.find("</QrcInfos>") {
-///             attach_lrc_translation_lines(&mut qrc_candidate, tail);   // ±2s 就近挂载
+///             attach_lrc_aux_lines(&mut qrc_candidate, tail);   // ±2s 就近挂载，按角色分流
 ///
 /// 插件主文是 QRC 内层行（`[540,4170]You (540,480)make`）但没有 XML 外壳，
 /// 于是整段挂载逻辑从未执行。
+///
+/// 罗马音（日语罗马字 / 粤语粤拼）走同一条挂载路径：前缀 `【罗马音】` 由 Rust
+/// detect_explicit_role 识别为 Roman，写进 roman_text；`【翻译】` 写 translated_text。
+/// 两轨必须分开，否则粤语歌的粤拼会被当成译文顶掉真正的中文翻译。
 void main() {
   const main = '[00:10.000]Hello world\n'
       '[00:14.000]Second line\n'
@@ -92,6 +96,62 @@ void main() {
       const qrcBody = '[540,4170]You (540,480)make';
       expect(composePluginLyricsRaw(qrcBody, ''), contains(qrcBody));
       expect(composePluginLyricsRaw(qrcBody, ''), isNot(contains('QrcInfos')));
+    });
+  });
+
+  group('罗马音轨（日语罗马字 / 粤语粤拼）', () {
+    // 粤语样本取自线上 romalrc 实测（《海阔天空》网易返回的粤拼）
+    const canto = '[00:18.850]今天我\n[00:25.500]原谅我这一生';
+    const cantoRoma = '[00:18.850]gam tin o hon yei lei hon sv piu guo\n'
+        '[00:25.500]wai zoe lang koe liu di sam wo piu yvn fong';
+
+    test('对齐后带【罗马音】前缀，不会串成译文', () {
+      final aligned = alignRomanizationToMainLyric(canto, cantoRoma);
+
+      expect(aligned, contains('[00:18.850]【罗马音】gam tin o hon'));
+      expect(aligned, contains('[00:25.500]【罗马音】wai zoe lang koe'));
+      expect(aligned, isNot(contains('【翻译】')));
+    });
+
+    test('罗马音时间戳错位时吸附回对应主行', () {
+      final aligned = alignRomanizationToMainLyric(
+          canto, '[00:19.050]gam tin o hon\n[00:25.700]wai zoe lang koe');
+
+      expect(aligned, contains('[00:18.850]【罗马音】gam tin o hon'));
+      expect(aligned, contains('[00:25.500]【罗马音】wai zoe lang koe'));
+    });
+
+    test('空行被丢掉，不生成只有时间戳的裸行', () {
+      // 网易粤语 romalrc 前几行常是空（纯伴奏），不过滤会得到一堆空时间戳行
+      final aligned = alignRomanizationToMainLyric(
+          canto, '[00:18.850]\n[00:25.500]wai zoe lang koe');
+
+      final lines = aligned
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList();
+      expect(lines.length, 1);
+      expect(lines.single, contains('【罗马音】wai zoe lang koe'));
+    });
+
+    test('译文与罗马音同曲共存：两条前缀都保留', () {
+      final translation =
+          alignTranslationToMainLyric(canto, '[00:18.850]今天我');
+      final romaji = alignRomanizationToMainLyric(canto, cantoRoma);
+
+      final raw =
+          composeLyricsRaw(canto, translation: translation, romaji: romaji);
+
+      expect(raw, contains('【翻译】今天我'));
+      expect(raw, contains('【罗马音】gam tin o hon'));
+    });
+
+    test('没有罗马音时组装结果与旧行为一致', () {
+      final wrapped = composeLyricsRaw(main, translation: '');
+
+      expect(wrapped, main);
+      expect(wrapped, isNot(contains('QrcInfos')));
     });
   });
 }

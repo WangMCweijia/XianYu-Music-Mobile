@@ -42,6 +42,15 @@ class FloatingLyricsController with WidgetsBindingObserver {
   /// 歌词请求容易空手而归；不重试这首歌就会一直停在「等待播放」。
   static const int _lyricsRetryMax = 3;
 
+  /// 单次取词的整体等待上限。本地曲目比在线多两段：读本地库、补抓罗马音轨，
+  /// 任一段卡住（插件串行锁被占、搜索与原生接口超时叠加）都不会 reject，
+  /// 只会让这次 await 一直挂着——窗口于是永远停在上一首的内容上。
+  /// 超时先按「暂无歌词」出结果，再交给重试，绝不无限等。
+  static const Duration _fetchTimeout = Duration(seconds: 6);
+
+  String? _keyOf(QueueItem? item) =>
+      item == null ? null : '${item.path}|${item.title}|${item.artist}';
+
   void init() {
     WidgetsBinding.instance.addObserver(this);
     _events.setMethodCallHandler(_onEvent);
@@ -73,7 +82,8 @@ class FloatingLyricsController with WidgetsBindingObserver {
   void _onLanguageChanged() {
     if (!_enabled) return;
     _lyrics = const [];
-    _fetchLyrics(_container.read(playerProvider).current);
+    _pushLyricsJson(serializeLyricsForOverlay(const []), forKey: _songKey);
+    unawaited(_fetchLyrics(_container.read(playerProvider).current));
   }
 
   // ---- 设置变化 ----
@@ -126,14 +136,17 @@ class FloatingLyricsController with WidgetsBindingObserver {
     if (s == null) return;
 
     final item = state.current;
-    final key = item == null
-        ? null
-        : '${item.path}|${item.title}|${item.artist}';
+    final key = _keyOf(item);
     if (key != _songKey) {
       _songKey = key;
       _lyrics = const [];
       _lyricsRetryTimer?.cancel();
-      _fetchLyrics(item);
+      // 切歌必须立刻把原生侧清空。窗口按当前播放进度在歌词数组里二分查找，
+      // 只清内存里的 _lyrics 是没用的：原生手里还是上一首的数组，
+      // 新歌从头开始播，就会把上一首的句子按新进度一句句滚出来 ——
+      // 现象正是「本地歌接着显示上一首在线歌的歌词」。
+      _pushLyricsJson(serializeLyricsForOverlay(const []), forKey: key);
+      unawaited(_fetchLyrics(item));
     }
     // 换歌/清队列会改变「该不该有窗」（清空队列则收窗）；暂停的收放
     // 交给原生按 hideWhenPaused 处理，不重启服务
@@ -144,21 +157,50 @@ class FloatingLyricsController with WidgetsBindingObserver {
 
   Future<void> _fetchLyrics(QueueItem? item, {int attempt = 0}) async {
     final token = ++_fetchToken;
+    final key = _keyOf(item);
     _lastFetchAtMs = DateTime.now().millisecondsSinceEpoch;
     if (item == null) {
-      _pushLyricsJson('');
+      _pushLyricsJson(serializeLyricsForOverlay(const []), forKey: key);
       return;
     }
     List<LyricLine> lines;
+    final future = _container.read(lyricsRepositoryProvider).fetchLyrics(item);
     try {
-      lines = await _container.read(lyricsRepositoryProvider).fetchLyrics(item);
+      lines = await future.timeout(_fetchTimeout);
+    } on TimeoutException {
+      AppLog.warn(
+        'lyric',
+        '桌面歌词取词超时 ${_fetchTimeout.inSeconds}s: ${item.title} attempt=$attempt',
+      );
+      lines = const [];
+      // 超时只放弃「等」，不取消请求：本地歌要读库、又可能补抓罗马音轨，
+      // 慢到超过上限很常见。原请求完成时如果还是这首歌、且手上仍没有词，
+      // 就补推一次 —— 否则重试次数用完，整首歌都会停在「暂无歌词」。
+      unawaited(
+        future.then<void>(
+          (late) {
+            if (late.isEmpty || key != _songKey || _lyrics.isNotEmpty) return;
+            _lyrics = late;
+            _pushLyricsJson(serializeLyricsForOverlay(late), forKey: key);
+            AppLog.debug(
+              'lyric',
+              '桌面歌词补推: title=${item.title} lines=${late.length}',
+            );
+          },
+          onError: (Object e) =>
+              AppLog.debug('lyric', '桌面歌词补推跳过: $e'),
+        ),
+      );
     } catch (e) {
       AppLog.warn('lyric', '桌面歌词取词异常: $e');
       lines = const [];
     }
     if (token != _fetchToken) return;
+    // 只认 token 不够：切歌时若有更晚发起的旧曲目请求（onNeedLyrics 读到的
+    // 仍是上一首的 current），它的 token 更大，会把这次的正确结果顶掉。
+    if (key != _songKey) return;
     _lyrics = lines;
-    _pushLyricsJson(serializeLyricsForOverlay(lines));
+    _pushLyricsJson(serializeLyricsForOverlay(lines), forKey: key);
     AppLog.debug(
       'lyric',
       '桌面歌词推送: title=${item.title} lines=${lines.length} attempt=$attempt',
@@ -171,7 +213,7 @@ class FloatingLyricsController with WidgetsBindingObserver {
   void _scheduleLyricsRetry(QueueItem item, int attempt) {
     _lyricsRetryTimer?.cancel();
     _lyricsRetryTimer = Timer(Duration(milliseconds: 1500 * attempt), () {
-      if (_songKey != '${item.path}|${item.title}|${item.artist}') return;
+      if (_songKey != _keyOf(item)) return;
       unawaited(_fetchLyrics(item, attempt: attempt));
     });
   }
@@ -222,10 +264,13 @@ class FloatingLyricsController with WidgetsBindingObserver {
   }
 
   void _pushLyrics(AppSettings s) {
-    _pushLyricsJson(serializeLyricsForOverlay(_lyrics));
+    _pushLyricsJson(serializeLyricsForOverlay(_lyrics), forKey: _songKey);
   }
 
-  void _pushLyricsJson(String json) {
+  /// [forKey] 非空时校验当前曲目：异步取词可能晚于切歌返回，
+  /// 不校验就会把上一首的歌词推给正在播的新歌。
+  void _pushLyricsJson(String json, {String? forKey}) {
+    if (forKey != null && forKey != _songKey) return;
     try {
       _channel.invokeMethod('setLyrics', {'json': json});
     } catch (e) {
@@ -284,7 +329,7 @@ class FloatingLyricsController with WidgetsBindingObserver {
         // 已有歌词就直接补推；没有才重取，且 4 秒内不重复取 ——
         // 取词会占住插件引擎的串行锁，刷太勤会拖慢播放地址解析。
         if (_lyrics.isNotEmpty) {
-          _pushLyricsJson(serializeLyricsForOverlay(_lyrics));
+          _pushLyricsJson(serializeLyricsForOverlay(_lyrics), forKey: _songKey);
         } else if (DateTime.now().millisecondsSinceEpoch - _lastFetchAtMs >
             4000) {
           await _fetchLyrics(_container.read(playerProvider).current);

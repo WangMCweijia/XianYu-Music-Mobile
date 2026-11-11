@@ -50,7 +50,8 @@ const Duration _playbackYieldLimit = Duration(milliseconds: 1800);
 const Duration _localLyricTimeout = Duration(seconds: 5);
 
 /// 本地曲目在库里没歌词时，按在线身份补取的上限。
-/// 含「没有在线身份时先按歌名歌手搜索同曲」这一步（搜索自身 3s 上限）。
+/// 含「没有在线身份时先按歌名歌手搜索同曲」这一步（搜索自身 5s 上限），
+/// 所以要留够两段的时间。
 const Duration _localOnlineFallbackTimeout = Duration(seconds: 12);
 
 /// 本地曲目按歌名歌手匹配到的在线同曲，值为 (曲目, 写入时刻毫秒)。
@@ -63,20 +64,22 @@ const int _localMatchTtlMs = 10 * 60 * 1000;
 /// 关键：本地「没有歌词」时 Rust 侧返回的是 `{"displayLines":[]}` 这种**非空**
 /// JSON，不是空串。只判 `isEmpty` 会把「空歌词」当成「有歌词」，兜底永远不触发，
 /// 界面就永远停在「暂无歌词」。
+///
+/// 这里刻意用正则而不是 `jsonDecode`：这份载荷可能几百 KB（逐字歌词），
+/// 在切歌的主线程上再解析一遍就是可见的卡顿，而解析结果 isolates 侧本来就要做。
+/// 行数组的每个元素都是对象，所以「非空」一定长成 `[{`（紧凑输出无空白）。
+final RegExp _nonEmptyLyricLines = RegExp(
+  r'"(?:displayLines|display_lines|lines)"\s*:\s*\[\s*\{',
+);
+
 bool _payloadHasLines(String payload) {
   if (payload.isEmpty || payload == 'null') return false;
-  try {
-    final decoded = jsonDecode(payload);
-    if (decoded is! Map) return false;
-    for (final key in const ['displayLines', 'display_lines', 'lines']) {
-      final value = decoded[key];
-      if (value is List && value.isNotEmpty) return true;
-    }
-    return false;
-  } catch (_) {
-    // 解析不了说明不是标准载荷，交给上层按原有逻辑处理
-    return true;
-  }
+  if (_nonEmptyLyricLines.hasMatch(payload)) return true;
+  // 三个已知的行数组键都不在：这不是本 App 的载荷格式，按「有内容」放行。
+  // 否则字段名一变，在线歌就会被判成空载荷，缓存与推送一起失效。
+  return !payload.contains('"displayLines"') &&
+      !payload.contains('"display_lines"') &&
+      !payload.contains('"lines"');
 }
 
 /// 罗马音开关会改变载荷内容：关着就不注入、也不额外请求原生接口，

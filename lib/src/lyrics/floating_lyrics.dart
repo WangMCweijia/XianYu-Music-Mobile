@@ -35,6 +35,12 @@ class FloatingLyricsController with WidgetsBindingObserver {
   String? _songKey;
   List<LyricLine> _lyrics = const [];
   int _fetchToken = 0;
+  Timer? _lyricsRetryTimer;
+  int _lastFetchAtMs = 0;
+
+  /// 取到空歌词时的重试次数上限。切歌瞬间插件引擎在解析播放地址，
+  /// 歌词请求容易空手而归；不重试这首歌就会一直停在「等待播放」。
+  static const int _lyricsRetryMax = 3;
 
   void init() {
     WidgetsBinding.instance.addObserver(this);
@@ -58,6 +64,7 @@ class FloatingLyricsController with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _events.setMethodCallHandler(null);
     I18n.modeVersion.removeListener(_onLanguageChanged);
+    _lyricsRetryTimer?.cancel();
     _settingsSub?.close();
     _playerSub?.close();
     _mvSub?.close();
@@ -125,6 +132,7 @@ class FloatingLyricsController with WidgetsBindingObserver {
     if (key != _songKey) {
       _songKey = key;
       _lyrics = const [];
+      _lyricsRetryTimer?.cancel();
       _fetchLyrics(item);
     }
     // 换歌/清队列会改变「该不该有窗」（清空队列则收窗）；暂停的收放
@@ -134,16 +142,38 @@ class FloatingLyricsController with WidgetsBindingObserver {
     _pushPlayback(s);
   }
 
-  Future<void> _fetchLyrics(QueueItem? item) async {
+  Future<void> _fetchLyrics(QueueItem? item, {int attempt = 0}) async {
     final token = ++_fetchToken;
+    _lastFetchAtMs = DateTime.now().millisecondsSinceEpoch;
     if (item == null) {
       _pushLyricsJson('');
       return;
     }
-    final lines = await _container.read(lyricsRepositoryProvider).fetchLyrics(item);
+    List<LyricLine> lines;
+    try {
+      lines = await _container.read(lyricsRepositoryProvider).fetchLyrics(item);
+    } catch (e) {
+      AppLog.warn('lyric', '桌面歌词取词异常: $e');
+      lines = const [];
+    }
     if (token != _fetchToken) return;
     _lyrics = lines;
     _pushLyricsJson(serializeLyricsForOverlay(lines));
+    AppLog.debug(
+      'lyric',
+      '桌面歌词推送: title=${item.title} lines=${lines.length} attempt=$attempt',
+    );
+    if (lines.isEmpty && attempt < _lyricsRetryMax) {
+      _scheduleLyricsRetry(item, attempt + 1);
+    }
+  }
+
+  void _scheduleLyricsRetry(QueueItem item, int attempt) {
+    _lyricsRetryTimer?.cancel();
+    _lyricsRetryTimer = Timer(Duration(milliseconds: 1500 * attempt), () {
+      if (_songKey != '${item.path}|${item.title}|${item.artist}') return;
+      unawaited(_fetchLyrics(item, attempt: attempt));
+    });
   }
 
   // ---- 推送原生 ----
@@ -196,7 +226,11 @@ class FloatingLyricsController with WidgetsBindingObserver {
   }
 
   void _pushLyricsJson(String json) {
-    _channel.invokeMethod('setLyrics', {'json': json});
+    try {
+      _channel.invokeMethod('setLyrics', {'json': json});
+    } catch (e) {
+      AppLog.debug('lyric', '桌面歌词推送失败: $e');
+    }
   }
 
   void _pushPlayback(AppSettings s, {bool force = false}) {
@@ -245,6 +279,16 @@ class FloatingLyricsController with WidgetsBindingObserver {
         await _container
             .read(settingsProvider.notifier)
             .setFloatingLyricsLocked(false);
+      case 'onNeedLyrics':
+        // 原生侧播着却没有歌词（切歌时取词失败、服务被系统重建过等）。
+        // 已有歌词就直接补推；没有才重取，且 4 秒内不重复取 ——
+        // 取词会占住插件引擎的串行锁，刷太勤会拖慢播放地址解析。
+        if (_lyrics.isNotEmpty) {
+          _pushLyricsJson(serializeLyricsForOverlay(_lyrics));
+        } else if (DateTime.now().millisecondsSinceEpoch - _lastFetchAtMs >
+            4000) {
+          await _fetchLyrics(_container.read(playerProvider).current);
+        }
       case 'onPositionChanged':
         final x = (call.arguments as Map?)?.cast<String, dynamic>()['x'] as int?;
         final y = (call.arguments as Map?)?.cast<String, dynamic>()['y'] as int?;
@@ -292,7 +336,13 @@ class FloatingLyricsController with WidgetsBindingObserver {
       return;
     }
     _pushSettings(s);
-    _pushLyrics(s);
+    if (_lyrics.isEmpty) {
+      // 服务可能被系统回收重建过；内存里这份歌词也空了，重取而不是推空串，
+      // 否则窗口重建后就一直停在「等待播放」。
+      unawaited(_fetchLyrics(_container.read(playerProvider).current));
+    } else {
+      _pushLyrics(s);
+    }
     _pushPlayback(s, force: true);
   }
 

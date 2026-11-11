@@ -34,6 +34,9 @@ final Map<String, Future<String>> _inflightPayload = {};
 /// 超过就先用插件已有的罗马音（或先不出罗马音）把主歌词放出去。
 const Duration _romajiNativeTimeout = Duration(milliseconds: 1500);
 
+/// 起播解析期间留给播放地址的最长时间（见 `_yieldToPlayback`）。
+const Duration _playbackYieldLimit = Duration(milliseconds: 1800);
+
 /// 罗马音开关会改变载荷内容：关着就不注入、也不额外请求原生接口，
 /// 所以缓存必须带上这个维度，否则「先播歌、后开开关」会一直空到换歌。
 String _lyricsCacheKey(String path, bool wantRomaji) =>
@@ -128,11 +131,34 @@ class LyricsRepository {
     }
   }
 
+  /// 起播解析期间给播放地址让路。
+  ///
+  /// Rust 插件宿主对同一个插件实例加了 `call_lock`（同一 JS runtime 严格串行），
+  /// 歌词抓取若先拿到锁，「取播放地址」就得排在它后面 —— 歌词越重，起播越慢。
+  /// 这也是「带罗马音的歌要等很久才能播放」的直接原因：罗马音多一路原生请求。
+  /// 这里轮询起播状态，最多让 [_playbackYieldLimit]，避免异常时无限等。
+  Future<void> _yieldToPlayback() async {
+    const step = Duration(milliseconds: 80);
+    var waited = Duration.zero;
+    while (waited < _playbackYieldLimit) {
+      bool resolving;
+      try {
+        resolving = _ref.read(playerProvider).resolving;
+      } catch (_) {
+        return;
+      }
+      if (!resolving) return;
+      await Future<void>.delayed(step);
+      waited += step;
+    }
+  }
+
   Future<String> _fetchLyricsJson(
     QueueItem item, {
     void Function()? onRomajiMissing,
   }) async {
     if (item.isOnline) {
+      await _yieldToPlayback();
       Future<Map<String, dynamic>?>? nativePending;
       // 同一个原生请求只发一次；不同调用点只是等待方式不同（有没有上限）。
       // 超时只作用于「等」，不取消请求，后续仍能拿到完整结果。

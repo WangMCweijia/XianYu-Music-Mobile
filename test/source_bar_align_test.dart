@@ -8,7 +8,7 @@ import 'package:xianyu_music_mobile/src/widgets/source_bar_scroll_view.dart';
 /// 线上现场：搜索结果页「平台选择」这一行左侧空出一大段，第一颗胶囊
 /// 落在屏幕中间、右侧胶囊被裁。原因是横向弹性滚动允许位置停在负值，
 /// 整行内容被整体推到右边。这里锁住三件事：第一颗胶囊贴左内边距、
-/// 负滚动位置会被回正、切平台只滚到左边缘且不越界。
+/// 负滚动位置会被回正、切平台自动居中时滚动位置不越界。
 Widget _host(Widget bar) {
   return MaterialApp(
     home: Scaffold(
@@ -67,7 +67,7 @@ void main() {
     );
   });
 
-  testWidgets('切平台把选中胶囊滚到左边缘且滚动位置非负', (tester) async {
+  testWidgets('切平台居中滚动不越界、不把整行推到右侧', (tester) async {
     final keys = List.generate(10, (_) => GlobalKey());
     await tester.pumpWidget(
       _host(SourceBarScrollView(children: _pills(keys))),
@@ -77,7 +77,7 @@ void main() {
     // duration 默认 0，直接 jumpTo，不引入动画等待
     await Scrollable.ensureVisible(
       keys[2].currentContext!,
-      alignment: 0.0,
+      alignment: 0.5,
     );
     await tester.pump();
 
@@ -86,8 +86,12 @@ void main() {
     );
     expect(state.controller.offset, greaterThanOrEqualTo(0.0));
     expect(
-      tester.getTopLeft(find.byKey(keys[2])).dx - _barLeft(tester),
-      closeTo(14.0, 0.5),
+      state.controller.offset,
+      lessThanOrEqualTo(state.controller.position.maxScrollExtent),
     );
+    final double selectedX =
+        tester.getTopLeft(find.byKey(keys[2])).dx - _barLeft(tester);
+    expect(selectedX, greaterThanOrEqualTo(0.0));
+    expect(selectedX, lessThan(460.0));
   });
 }

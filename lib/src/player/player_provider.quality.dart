@@ -51,14 +51,65 @@ extension PlayerNotifierQuality on PlayerNotifier {
     return s.length > 24 ? '${s.substring(0, 24)}…' : s;
   }
 
+  /// 歌曲身份键（音质探测注册表 / 直链别名索引共用）。
+  ///
+  /// 曲目 id 在三种数据形态里的存放位置不同：
+  ///   ① mf 插件：`{pluginId, format, musicInfo:{songmid,...}}`
+  ///   ② lx 插件：`{pluginId, format:'lx', source, musicInfo:{songmid,...}}`
+  ///   ③ lx 兜底：曲目信息直接在顶层（历史数据 / 兜底换源写入的 newSongJson）
+  /// 早期实现只读顶层，①/② 永远取不到 id，键退化成**歌名**，于是所有同名
+  /// 歌曲（各种《梦伴》）共用一个音质探测器槽位：第一首解析出的直链被后面
+  /// 每一首复用，点谁的版本都播第一首。这里按 musicInfo → 顶层 → 在线 path
+  /// 的顺序取身份，任何一环缺失都不会再退化到歌名。
   String _songProbeKey(Map<String, dynamic> songJson, QueueItem item) {
     final pid = songJson['pluginId'];
     final src = songJson['source'];
-    final mid = songJson['songmid'] ?? songJson['id'];
+    String? mid;
+    final info = songJson['musicInfo'];
+    for (final m in <Object?>[info, songJson]) {
+      if (m is! Map) continue;
+      for (final k in const [
+        'songmid',
+        'songId',
+        'id',
+        'mid',
+        'hash',
+        'strMediaMid',
+      ]) {
+        final v = m[k];
+        if (v == null) continue;
+        final s = v.toString().trim();
+        if (s.isEmpty || s == 'null') continue;
+        mid = s;
+        break;
+      }
+      if (mid != null) break;
+    }
+    // 在线曲目的 path（plugin://<id>/<mid>、lx://<source>/<mid>）本身就是
+    // 唯一身份；本地文件路径不参与，避免同一路径被不同歌曲复用。
+    mid ??= _onlinePathIdentity(item.path);
     if (pid != null) {
       return 'plugin:$pid:${mid ?? songJson['title'] ?? item.title}';
     }
     return 'lx:$src:${mid ?? item.title}';
+  }
+
+  String? _onlinePathIdentity(String path) {
+    if (!path.startsWith('plugin://') &&
+        !path.startsWith('lx://') &&
+        !path.startsWith('cloud://')) {
+      return null;
+    }
+    final q = path.indexOf('?');
+    final bare = q < 0 ? path : path.substring(0, q);
+    final segs = bare
+        .substring(bare.indexOf('://') + 3)
+        .split('/')
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (segs.isEmpty) return null;
+    // lx://<source>/<mid> 取最后一段即可；plugin://<id>/<mid> 同理。
+    return segs.last;
   }
 
   Future<List<String>> _declaredQualities(Map<String, dynamic> songJson) async {

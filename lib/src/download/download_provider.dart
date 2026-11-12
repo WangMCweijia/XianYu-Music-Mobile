@@ -371,16 +371,23 @@ class DownloadManager extends StateNotifier<DownloadState> {
       ..sort((a, b) => b.downloadedAt.compareTo(a.downloadedAt));
     for (final h in candidates) {
       final hArtist = _normForMatch(h.artist ?? '');
-      final artistOk = normArtist.isEmpty ||
-          hArtist.isEmpty ||
+      // 歌手两边都有值才算「确认过」：只有一侧有值时比不出结论，
+      // 不能据此认定是同一录音（同名列的歌版本极多）。
+      final knownArtist = normArtist.isNotEmpty && hArtist.isNotEmpty;
+      final artistOk = !knownArtist ||
           hArtist == normArtist ||
           hArtist.contains(normArtist) ||
           normArtist.contains(hArtist);
       if (!artistOk) continue;
       final hDur = h.durationMs;
-      if (hDur > 0 && (durationMs ?? 0) > 0) {
-        if ((hDur - durationMs!).abs() > 3000) continue;
-      }
+      final curDur = durationMs ?? 0;
+      final knownDur = hDur > 0 && curDur > 0;
+      if (knownDur && (hDur - curDur).abs() > 3000) continue;
+      // 歌手与时长**都**无法确认身份时，同名不等于同一录音：
+      // 搜《梦伴》能出一串梅艳芳/关淑怡/李悦君/翻唱，若这里放行，
+      // 已下载的那一版会把所有同名版本顶掉（点谁的版本都播已下载的那首）。
+      // 宁可退回在线取址，也不拿别人的录音冒充。
+      if (!knownArtist && !knownDur) continue;
       try {
         final f = File(h.filePath);
         if (await f.exists() && await f.length() > 0) return h.filePath;

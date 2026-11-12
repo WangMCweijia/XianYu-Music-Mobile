@@ -39,3 +39,7 @@ jobs:
       # 而不是拼进主文（拼进主文会被解析器按脚本特征猜成译文，届时开关失效）
       - name: Lyric aux track test
         run: flutter test test/lyrics_translation_align_test.dart
+
+      # 平台选择行左对齐：横向弹性滚动被推到负偏移时，整行会右移留出空白
+      - name: Source bar align probe
+        run: flutter test test/source_bar_align_probe_test.dart --reporter expanded

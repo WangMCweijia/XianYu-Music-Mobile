@@ -50,21 +50,37 @@ void main() {
       closeTo(14.0, 0.5),
     );
 
-    // 模拟残留的负滚动位置（弹性 overscroll 的回弹被打断）
+    // 模拟残留的负滚动位置（弹性 overscroll 的回弹被打断 / PageStorage 读回）
     final state = tester.state<SourceBarScrollViewState>(
       find.byType(SourceBarScrollView),
     );
     state.controller.jumpTo(-200);
-    expect(state.controller.offset, -200.0);
-
-    state.clampToStart();
     await tester.pump();
-    expect(state.controller.offset, 0.0);
+    expect(
+      state.controller.offset,
+      0.0,
+      reason: '负偏移必须立刻回正，不能停留在越界位置等下一次滚动结束',
+    );
     expect(
       tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
       closeTo(14.0, 0.5),
       reason: '负滚动位置没有被回正，第一颗胶囊没有贴左',
     );
+
+    // 兜底入口保留且幂等
+    state.clampToStart();
+    await tester.pump();
+    expect(state.controller.offset, 0.0);
+  });
+
+  testWidgets('正常状态不显示诊断角标', (tester) async {
+    final keys = List.generate(4, (_) => GlobalKey());
+    await tester.pumpWidget(
+      _host(SourceBarScrollView(children: _pills(keys))),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('off='), findsNothing);
   });
 
   testWidgets('切平台居中滚动不越界、不把整行推到右侧', (tester) async {

@@ -16,6 +16,8 @@ import '../plugin/fallback_modules/types.dart';
 import '../plugin/plugin_provider.dart';
 import '../plugin/plugin_search.dart';
 import '../rust/api.dart';
+import 'cantonese_detect.dart';
+import 'jyutping.dart';
 import 'lyric_model.dart';
 import 'lyrics_bus.dart';
 
@@ -45,6 +47,10 @@ const Duration _romajiNativeTimeout = Duration(milliseconds: 1500);
 
 /// 起播解析期间留给播放地址的最长时间（见 `_yieldToPlayback`）。
 const Duration _playbackYieldLimit = Duration(milliseconds: 1800);
+
+/// 载荷里是否含汉字。粤拼只对中文歌词有意义，假名/韩文/纯英文歌词直接跳过，
+/// 省掉一次粤语识别（可能是一次网络请求）。
+final RegExp _hasHanText = RegExp(r'[\u3400-\u9FFF\uF900-\uFAFF]');
 
 /// 本地歌词（内嵌标签 / 同名 .lrc）读取上限。卡住时不设上限会造成整条取词链
 /// 永不返回 —— 桌面歌词会一直停在上一首的内容上，比「暂无歌词」难查得多。
@@ -193,13 +199,61 @@ class LyricsRepository {
 
   /// 解析完成后再把罗马音轨按时间戳注入载荷。
   /// 开关关闭或没有罗马音轨时原样返回，主歌词链路完全不受影响。
-  String _withRomaji(String payload, String romajiTrack, bool wantRomaji) {
-    if (!wantRomaji || romajiTrack.isEmpty) return payload;
+  ///
+  /// 没有现成罗马音轨时（粤语歌基本都没有，见 [JyutpingConverter]），
+  /// 退一步做「粤语识别 + 本地粤拼转写」——但只有确认是粤语歌才写，
+  /// 国语歌按粤音标注是错的。
+  Future<String> _withRomaji(
+    String payload,
+    String romajiTrack,
+    bool wantRomaji, {
+    QueueItem? item,
+  }) async {
+    if (!wantRomaji) return payload;
     if (payload.isEmpty || payload == 'null') return payload;
+    if (romajiTrack.isNotEmpty) {
+      try {
+        return injectRomajiIntoPayload(payload, romajiTrack);
+      } catch (e) {
+        AppLog.warn('lyric', '罗马音注入失败: $e');
+        return payload;
+      }
+    }
+    return _withJyutping(payload, item);
+  }
+
+  /// 粤语歌没有罗马音轨时，本地按粤拼标注。
+  ///
+  /// 三个前置条件都满足才动手：设置开着、载荷里确实有汉字、识别为粤语。
+  /// 任一条不成立就原样返回 —— 这条路径只做加法，不影响原有歌词。
+  Future<String> _withJyutping(String payload, QueueItem? item) async {
+    if (item == null) return payload;
+    final settings = _ref.read(settingsProvider).valueOrNull;
+    if (!(settings?.lyricsCantoneseJyutping ?? true)) return payload;
+    // 拼音/假名/韩文歌词不用粤拼。正则直接扫载荷原文，省一次 jsonDecode。
+    if (!_hasHanText.hasMatch(payload)) return payload;
+    bool cantonese;
     try {
-      return injectRomajiIntoPayload(payload, romajiTrack);
+      cantonese = await CantoneseDetector.instance.isCantonese(
+        title: item.title,
+        artist: item.artist,
+        lyricText: payload,
+      );
     } catch (e) {
-      AppLog.warn('lyric', '罗马音注入失败: $e');
+      AppLog.debug('lyric', '粤语识别失败: $e');
+      return payload;
+    }
+    if (!cantonese) return payload;
+    try {
+      await JyutpingConverter.ensureLoaded();
+      if (!JyutpingConverter.isReady) return payload;
+      final result = injectJyutpingIntoPayload(payload);
+      if (!identical(result, payload) && result != payload) {
+        AppLog.info('lyric', '粤拼已生成: ${item.title}');
+      }
+      return result;
+    } catch (e) {
+      AppLog.warn('lyric', '粤拼生成失败: $e');
       return payload;
     }
   }
@@ -281,7 +335,7 @@ class LyricsRepository {
             final payload = await parseLyrics(
               rawLyrics: composePluginLyricsRaw(decrypted, translation),
             );
-            return _withRomaji(payload, rlyric, wantRomaji);
+            return await _withRomaji(payload, rlyric, wantRomaji, item: item);
           }
           AppLog.warn('lyric', '插件歌词: 密文解密失败，无可用歌词');
           return '';
@@ -318,7 +372,12 @@ class LyricsRepository {
           final payload = await parseLyrics(
             rawLyrics: composePluginLyricsRaw(mainText, translation),
           );
-          final result = _withRomaji(payload, romajiTrack, wantRomaji);
+          final result = await _withRomaji(
+            payload,
+            romajiTrack,
+            wantRomaji,
+            item: item,
+          );
           if (romajiDegraded && romajiTrack.isEmpty) onRomajiMissing?.call();
           return result;
         }
@@ -333,7 +392,7 @@ class LyricsRepository {
         final r = (native['rlyric'] ?? '').trim();
         if (lx.isNotEmpty) {
           final payload = await parseLyrics(rawLyrics: lx);
-          return _withRomaji(payload, r, wantRomaji);
+          return await _withRomaji(payload, r, wantRomaji, item: item);
         }
         if (main.isNotEmpty) {
           final payload = await parseLyrics(
@@ -344,7 +403,7 @@ class LyricsRepository {
                   )
                 : main,
           );
-          return _withRomaji(payload, r, wantRomaji);
+          return await _withRomaji(payload, r, wantRomaji, item: item);
         }
         AppLog.warn('lyric', '原生歌词兜底: 结果主文本为空 keys=${native.keys.toList()}');
       } else {
@@ -398,7 +457,7 @@ class LyricsRepository {
       onRomajiMissing?.call();
       return local;
     }
-    return _withRomaji(local, romajiTrack, true);
+    return await _withRomaji(local, romajiTrack, true, item: item);
   }
 
   /// 载荷里是否已有**非空**罗马音。

@@ -76,6 +76,13 @@ final Map<String, String> _localPayloadCache = {};
 /// 僵尸 Future，之后每次取词都合并到它上面，整首歌都只能是「暂无歌词」。
 const Duration _payloadDeadline = Duration(seconds: 20);
 
+/// 载荷解析（isolate）上限。compute 在极端情况下不返回，不能让它把取词链挂死。
+const Duration _parseDeadline = Duration(seconds: 10);
+
+/// 原生歌词接口（Rust 侧网络请求）上限。超过就先按「没有译文/罗马音」继续，
+/// 不让一个不响应的源站把整首歌的歌词扣住。
+const Duration _nativeLyricTimeout = Duration(seconds: 6);
+
 /// 载荷里是否真有歌词行。
 ///
 /// 关键：本地「没有歌词」时 Rust 侧返回的是 `{"displayLines":[]}` 这种**非空**
@@ -125,13 +132,34 @@ class LyricsRepository {
       _lyricsCache.remove(key);
     }
     try {
+      final sw = Stopwatch()..start();
       final jsonStr = await fetchPayloadJson(item);
-      if (jsonStr.isEmpty || jsonStr == 'null') return const [];
+      if (jsonStr.isEmpty || jsonStr == 'null') {
+        AppLog.info(
+          'lyric',
+          '仓库取词为空 ${sw.elapsedMilliseconds}ms: ${item.title}',
+        );
+        return const [];
+      }
       // 解析 + 边界归一在同一次 compute 里做完：两次 isolate 往返要把整份
       // 歌词列表复制两遍，切歌时是可见的延迟。
-      final lines = await compute(_parseAndNormalizeLyricsJson, jsonStr);
+      //
+      // 这里也必须设上限：isolate 起不来（低内存/被系统压着）时 compute 会一直
+      // 挂着不返回，调用方就永远停在「加载中」。
+      final lines = await compute(
+        _parseAndNormalizeLyricsJson,
+        jsonStr,
+      ).timeout(_parseDeadline, onTimeout: () {
+        AppLog.warn('lyric', '载荷解析超时 ${_parseDeadline.inSeconds}s: ${item.title}');
+        return const <LyricLine>[];
+      });
       final localized = localizeLyricLines(lines);
       if (localized.isNotEmpty) _cacheLyrics(key, localized);
+      AppLog.info(
+        'lyric',
+        '仓库取词完成 ${sw.elapsedMilliseconds}ms lines=${localized.length}: '
+            '${item.title}',
+      );
       return localized;
     } catch (e) {
       AppLog.warn('lyric', '歌词载荷处理异常: $e');
@@ -286,14 +314,25 @@ class LyricsRepository {
     bool forceOnline = false,
   }) async {
     if (item.isOnline || forceOnline) {
+      final swOnline = Stopwatch()..start();
+      AppLog.info(
+        'lyric',
+        '在线取词 start: ${item.title}/${item.artist} path=${item.path} '
+            'forceOnline=$forceOnline',
+      );
       await _yieldToPlayback();
       Future<Map<String, dynamic>?>? nativePending;
       // 同一个原生请求只发一次；不同调用点只是等待方式不同（有没有上限）。
       // 超时只作用于「等」，不取消请求，后续仍能拿到完整结果。
       Future<Map<String, dynamic>?> nativeOnce({Duration? timeout}) async {
         final pending = nativePending ??= fetchNativeLyricResult(item);
-        if (timeout == null) return await pending;
-        return await pending.timeout(timeout, onTimeout: () => null);
+        // 以前 `timeout == null` 就是无限等（补译文那一路），而这段是「插件宿主
+        // 串行锁 + Rust 网络请求」，源站不响应时会一直挂着 —— 整首歌的歌词都被
+        // 它扣住，详情页只能一直转圈。现在任何调用点都有上限。
+        return await pending.timeout(
+          timeout ?? const Duration(seconds: 9),
+          onTimeout: () => null,
+        );
       }
 
       final wantRomaji = _wantsRomaji;
@@ -308,6 +347,11 @@ class LyricsRepository {
         );
       }
       final pluginRes = await _fetchPluginLyric(item);
+      AppLog.info(
+        'lyric',
+        '在线取词 插件返回 ${swOnline.elapsedMilliseconds}ms '
+            'hasResult=${pluginRes != null}',
+      );
       if (pluginRes != null) {
         final mainText = pickPluginMainText(pluginRes);
         final tlyric = (pluginRes['tlyric'] as String?)?.trim() ?? '';
@@ -841,6 +885,17 @@ class LyricsRepository {
       final raw = await fetchLyricFromSource(
         source: sourceKey,
         songInfoJson: jsonEncode(songInfo),
+      ).timeout(
+        // 这是 Rust 侧的网络请求，源站不响应时会长时间挂着。以前没有上限，
+        // 整条取词链就靠最外层 20s 兜底陪跑 —— 详情页于是长时间转圈。
+        _nativeLyricTimeout,
+        onTimeout: () {
+          AppLog.warn(
+            'lyric',
+            '原生歌词兜底超时 ${_nativeLyricTimeout.inSeconds}s: sourceKey=$sourceKey',
+          );
+          return '';
+        },
       );
       if (raw.isEmpty || raw == 'null') return null;
       final obj = jsonDecode(raw) as Map<String, dynamic>;

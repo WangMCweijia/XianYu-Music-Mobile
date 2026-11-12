@@ -18,12 +18,11 @@ extension _SearchResultPageSources on _SearchResultPageState {
     if (changed) setState(() {});
     final ctx = _sourceKeys[s.id]?.currentContext;
     if (ctx != null) {
-      // 贴左而不是居中：居中会把靠前的胶囊请求到负滚动位置。
       Scrollable.ensureVisible(
         ctx,
         duration: const Duration(milliseconds: 300),
         curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.0,
+        alignment: 0.5,
       );
     }
   }
@@ -137,12 +136,11 @@ extension _SearchResultPageSources on _SearchResultPageState {
   void _ensureVisibleSource(String id) {
     final ctx = _sourceKeys[id]?.currentContext;
     if (ctx != null) {
-      // 贴左而不是居中：居中会把靠前的胶囊请求到负滚动位置。
       Scrollable.ensureVisible(
         ctx,
         duration: const Duration(milliseconds: 300),
         curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.0,
+        alignment: 0.5,
       );
     }
   }

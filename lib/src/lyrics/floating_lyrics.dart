@@ -11,6 +11,7 @@ import '../i18n/i18n.dart';
 import '../player/mv_provider.dart';
 import '../player/player_provider.dart';
 import 'lyric_model.dart';
+import 'lyrics_bus.dart';
 import 'lyrics_repository.dart';
 
 class FloatingLyricsController with WidgetsBindingObserver {
@@ -34,19 +35,18 @@ class FloatingLyricsController with WidgetsBindingObserver {
   bool _lastPushedPlaying = false;
   String? _songKey;
   List<LyricLine> _lyrics = const [];
-  int _fetchToken = 0;
   Timer? _lyricsRetryTimer;
   int _lastFetchAtMs = 0;
 
   /// 取到空歌词时的重试次数上限。切歌瞬间插件引擎在解析播放地址，
   /// 歌词请求容易空手而归；不重试这首歌就会一直停在「等待播放」。
-  static const int _lyricsRetryMax = 3;
+  static const int _lyricsRetryMax = 4;
 
   /// 单次取词的整体等待上限。本地曲目比在线多两段：读本地库、补抓罗马音轨，
   /// 任一段卡住（插件串行锁被占、搜索与原生接口超时叠加）都不会 reject，
   /// 只会让这次 await 一直挂着——窗口于是永远停在上一首的内容上。
-  /// 超时先按「暂无歌词」出结果，再交给重试，绝不无限等。
-  static const Duration _fetchTimeout = Duration(seconds: 6);
+  /// 超时先按「暂无歌词」出结果，再交给重试与直读兜底，绝不无限等。
+  static const Duration _fetchTimeout = Duration(seconds: 8);
 
   String? _keyOf(QueueItem? item) =>
       item == null ? null : '${item.path}|${item.title}|${item.artist}';
@@ -55,6 +55,9 @@ class FloatingLyricsController with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _events.setMethodCallHandler(_onEvent);
     I18n.modeVersion.addListener(_onLanguageChanged);
+    // 播放页/其它链路拿到歌词时会广播，这里直接复用，避免「页面有词、
+    // 悬浮窗却一直暂无歌词」。
+    resolvedLyricsNotifier.addListener(_onResolvedLyrics);
     _settingsSub = _container.listen(settingsProvider, (prev, next) {
       final s = next.valueOrNull;
       if (s == null) return;
@@ -73,6 +76,7 @@ class FloatingLyricsController with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _events.setMethodCallHandler(null);
     I18n.modeVersion.removeListener(_onLanguageChanged);
+    resolvedLyricsNotifier.removeListener(_onResolvedLyrics);
     _lyricsRetryTimer?.cancel();
     _settingsSub?.close();
     _playerSub?.close();
@@ -156,15 +160,15 @@ class FloatingLyricsController with WidgetsBindingObserver {
   }
 
   Future<void> _fetchLyrics(QueueItem? item, {int attempt = 0}) async {
-    final token = ++_fetchToken;
     final key = _keyOf(item);
     _lastFetchAtMs = DateTime.now().millisecondsSinceEpoch;
     if (item == null) {
       _pushLyricsJson(serializeLyricsForOverlay(const []), forKey: key);
       return;
     }
+    final repo = _container.read(lyricsRepositoryProvider);
     List<LyricLine> lines;
-    final future = _container.read(lyricsRepositoryProvider).fetchLyrics(item);
+    final future = repo.fetchLyrics(item);
     try {
       lines = await future.timeout(_fetchTimeout);
     } on TimeoutException {
@@ -195,10 +199,21 @@ class FloatingLyricsController with WidgetsBindingObserver {
       AppLog.warn('lyric', '桌面歌词取词异常: $e');
       lines = const [];
     }
-    if (token != _fetchToken) return;
-    // 只认 token 不够：切歌时若有更晚发起的旧曲目请求（onNeedLyrics 读到的
-    // 仍是上一首的 current），它的 token 更大，会把这次的正确结果顶掉。
+    // 仓库那条链没给出行 —— 本地曲目很常见（要过缓存/合并/在线兜底好几道）。
+    // 这里再按**播放页同一条路**直读一次：页面显示得出来的歌词，这里必然也拿得到。
+    if (lines.isEmpty && !item.isOnline && !item.isCloud) {
+      final direct = await repo.fetchLocalLyricsDirect(item);
+      if (direct.isNotEmpty) {
+        lines = direct;
+        AppLog.info(
+          'lyric',
+          '桌面歌词本地直读: title=${item.title} lines=${lines.length}',
+        );
+      }
+    }
     if (key != _songKey) return;
+    // 同一首歌已经有歌词了，就别被后来的空结果（重试、旧请求晚到）冲掉。
+    if (lines.isEmpty && _lyrics.isNotEmpty) return;
     _lyrics = lines;
     _pushLyricsJson(serializeLyricsForOverlay(lines), forKey: key);
     AppLog.debug(
@@ -207,6 +222,37 @@ class FloatingLyricsController with WidgetsBindingObserver {
     );
     if (lines.isEmpty && attempt < _lyricsRetryMax) {
       _scheduleLyricsRetry(item, attempt + 1);
+    }
+  }
+
+  /// 别处（播放页、仓库兜底）解析出歌词时广播过来，直接采用。
+  ///
+  /// 播放页读本地曲目是「直读标签/同名 .lrc」，比仓库这条链快且稳；
+  /// 它能显示而悬浮窗空着，就是这个监听要消灭的差异。
+  void _onResolvedLyrics() {
+    final event = resolvedLyricsNotifier.value;
+    if (event == null) return;
+    final item = _container.read(playerProvider).current;
+    if (item == null || item.path != event.path) return;
+    if (_lyrics.isNotEmpty) return;
+    unawaited(_adoptPayload(item, event.payload));
+  }
+
+  Future<void> _adoptPayload(QueueItem item, String payload) async {
+    final key = _keyOf(item);
+    try {
+      final lines =
+          await _container.read(lyricsRepositoryProvider).parsePayload(payload);
+      if (lines.isEmpty || key != _songKey || _lyrics.isNotEmpty) return;
+      _lyrics = lines;
+      _lyricsRetryTimer?.cancel();
+      _pushLyricsJson(serializeLyricsForOverlay(lines), forKey: key);
+      AppLog.info(
+        'lyric',
+        '桌面歌词复用广播载荷: title=${item.title} lines=${lines.length}',
+      );
+    } catch (e) {
+      AppLog.debug('lyric', '桌面歌词复用载荷失败: $e');
     }
   }
 

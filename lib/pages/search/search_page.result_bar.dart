@@ -18,11 +18,12 @@ extension _SearchResultPageSources on _SearchResultPageState {
     if (changed) setState(() {});
     final ctx = _sourceKeys[s.id]?.currentContext;
     if (ctx != null) {
+      // 贴左而不是居中：居中会把靠前的胶囊请求到负滚动位置。
       Scrollable.ensureVisible(
         ctx,
         duration: const Duration(milliseconds: 300),
         curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.5,
+        alignment: 0.0,
       );
     }
   }
@@ -136,37 +137,31 @@ extension _SearchResultPageSources on _SearchResultPageState {
   void _ensureVisibleSource(String id) {
     final ctx = _sourceKeys[id]?.currentContext;
     if (ctx != null) {
+      // 贴左而不是居中：居中会把靠前的胶囊请求到负滚动位置。
       Scrollable.ensureVisible(
         ctx,
         duration: const Duration(milliseconds: 300),
         curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.5,
+        alignment: 0.0,
       );
     }
   }
 
   Widget _buildSourceBar({bool floating = false}) {
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        padding: EdgeInsets.symmetric(
-          horizontal: floating ? 2 : 14,
-        ),
-        children: [
-          for (final s in _sources)
-            Padding(
-              key: _sourceKeys[s.id],
-              padding: const EdgeInsets.only(right: 8),
-              child: FloatingSourcePill(
-                name: s.name,
-                selected: s.id == _selected.id,
-                onTap: () => _onSourceSelected(s.id),
-              ),
+    return SourceBarScrollView(
+      floating: floating,
+      children: [
+        for (final s in _sources)
+          Padding(
+            key: _sourceKeys[s.id],
+            padding: const EdgeInsets.only(right: 8),
+            child: FloatingSourcePill(
+              name: s.name,
+              selected: s.id == _selected.id,
+              onTap: () => _onSourceSelected(s.id),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }

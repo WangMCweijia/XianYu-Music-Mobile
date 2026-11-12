@@ -46,13 +46,21 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     }
   }
 
+  /// 仅供布局回归测试直接驱动兜底，避免依赖弹性动画的时序。
+  @visibleForTesting
+  void clampToStart() => _clampToStart();
+
   @override
   Widget build(BuildContext context) {
     return SizedBox(
       height: 40,
       child: NotificationListener<ScrollNotification>(
         onNotification: (notification) {
-          if (notification.metrics.pixels < 0 && !_clampScheduled) {
+          // 只在滚动结束时回正：滚动过程中每帧都排帧尾回调会让
+          // pumpAndSettle / 真实渲染一直有新帧，永远安静不下来。
+          if (notification is ScrollEndNotification &&
+              notification.metrics.pixels < 0 &&
+              !_clampScheduled) {
             // 通知分发期间不能直接改 ScrollPosition，放到帧尾回正。
             _clampScheduled = true;
             WidgetsBinding.instance.addPostFrameCallback((_) {

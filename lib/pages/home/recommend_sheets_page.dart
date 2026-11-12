@@ -184,12 +184,11 @@ class _RecommendSheetsPageState extends ConsumerState<RecommendSheetsPage>
     _loadSheets(s);
     final ctx = _chipKeys[s.id]?.currentContext;
     if (ctx != null) {
-      // 贴左而不是居中：居中会把靠前的胶囊请求到负滚动位置。
       Scrollable.ensureVisible(
         ctx,
         duration: const Duration(milliseconds: 300),
         curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.0,
+        alignment: 0.5,
       );
     }
   }

@@ -729,7 +729,11 @@ class PlayerNotifier extends StateNotifier<PlaybackState>
         );
       }
       if (local != null && local != item.path) {
-        AppLog.info('play', '[local-first] ${item.title} -> $local');
+        AppLog.info(
+          'play',
+          '[local-first] ${item.title}/${item.artist} '
+              '${item.durationMs}ms -> $local',
+        );
         item = item.withLocalFile(local);
       }
     }

@@ -537,6 +537,21 @@ extension _SettingsCategoryPageSections on _SettingsCategoryPageState {
           ),
           _switchTile(
             context,
+            icon: Icons.translate_outlined,
+            title: tr('粤语歌显示粤拼'),
+            subtitle: tr(
+              '歌词源对粤语歌基本不给罗马音，这里按粤音本地生成（Jyutping）。'
+              '只对识别为粤语的歌生效，国语歌不会被标注',
+            ),
+            value: s?.lyricsCantoneseJyutping ?? true,
+            onChanged:
+                (s?.showLyricsRomaji ?? false) ||
+                    (s?.floatingLyricsShowRomanization ?? false)
+                ? (v) => n.setLyricsCantoneseJyutping(v)
+                : null,
+          ),
+          _switchTile(
+            context,
             icon: Icons.spellcheck_outlined,
             title: tr('逐字动效'),
             value: s?.enableWordEffect ?? true,

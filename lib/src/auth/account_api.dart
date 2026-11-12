@@ -9,7 +9,7 @@ import '../rust/api.dart' as frb;
 import 'auth_provider.dart';
 import 'server_models.dart';
 
-const appVersion = '2.0.7-beta26';
+const appVersion = '2.0.7-beta27';
 
 /// 已验签内测资格响应的本地缓存键（fail-closed：断网凭缓存放行，无缓存/过期则锁）。
 const _betaAccessCacheKey = 'beta_access_signed_payload_v1';

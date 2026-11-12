@@ -1,0 +1,20 @@
+name: Layout probe (temp)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.9
+          cache: true
+      - name: Pub get
+        run: flutter pub get
+      - name: Source bar layout probe
+        run: flutter test test/source_bar_align_probe_test.dart --reporter expanded

@@ -333,7 +333,11 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     final pathChanged = oldWidget.current?.path != widget.current?.path;
     final onlineJsonChanged =
         oldWidget.current?.onlineSongJson != widget.current?.onlineSongJson;
-    if (pathChanged || onlineJsonChanged) {
+    // 同一首曲子的「在线身份」变了（换源、音质探测补上 URL）不必重取歌词：
+    // 载荷按 path 缓存，重取反而会把已经出词的页面重新拖回加载态。只有手里
+    // 还没有词的时候，才值得为了新的在线身份再试一次。
+    final needFetch = pathChanged || (onlineJsonChanged && _lines.isEmpty);
+    if (needFetch) {
       final p = ref.read(playerProvider).position;
       _anchorPos = p;
       _displayPos = p;

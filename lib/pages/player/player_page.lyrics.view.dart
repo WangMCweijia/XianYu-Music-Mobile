@@ -111,6 +111,11 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
   /// 刚把罗马音开关打开、但当前载荷里没有罗马音时置位，触发一次重取。
   bool _wantRomajiReload = false;
 
+  /// 设置项首次对齐完成。首帧 `_showRomaji` 还是默认 false，若把这一次
+  /// 当成「用户刚打开开关」，每次进播放页都会白白触发一次 force 重取
+  /// （清页面缓存 → 又回到加载态，慢链路上看起来就是一直转圈）。
+  bool _settingsPrimed = false;
+
   /// 播放页自己这条取词链的硬上限。
   ///
   /// 链路上有「插件宿主串行锁」「原生歌词接口」「isolate 解析」几段都可能长时间
@@ -673,9 +678,14 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
       // 罗马音是按开关决定要不要取的，开开关后必须丢掉旧结果重取一次。
       _lyricsCache.remove(item.path);
     }
-    if (_loadedPath != item.path) _wantRomajiReload = false;
+    // 换歌先清空：新歌取不到词时不能把上一首的歌词留在屏幕上
+    // （那是「本地歌串上一首在线歌词」的观感）。同一首的重取则保留，
+    // 避免 force 重取失败反而把正在看的词擦掉。
+    final sameSong = _loadedPath == item.path;
+    if (!sameSong) _wantRomajiReload = false;
 
     setState(() {
+      if (!sameSong) _lines = const [];
       _loading = true;
       _loadedPath = item.path;
     });
@@ -762,18 +772,14 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
       }
 
       if (mounted) {
-        setState(() {
-          _lines = [];
-          _loading = false;
-        });
+        // force 重取没拿到东西时不要把手里的词擦掉，否则「重新取一次」
+        // 反而把正在看的歌词变成「暂无歌词」。真的空着时才落到空态。
+        setState(() => _loading = false);
         _reportRomaji();
       }
     } catch (_) {
       if (mounted) {
-        setState(() {
-          _lines = [];
-          _loading = false;
-        });
+        setState(() => _loading = false);
         _reportRomaji();
       }
     }
@@ -981,11 +987,14 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
         if (mounted) _tryPendingCenterJump();
       });
     }
-    if (newShowRomaji && !_showRomaji) _wantRomajiReload = true;
+    if (_settingsPrimed && newShowRomaji && !_showRomaji) {
+      _wantRomajiReload = true;
+    }
     _fontSizeIdx = newFontSizeIdx;
     _showTranslation = newShowTranslation;
     _showRomaji = newShowRomaji;
     _align = newAlign;
+    _settingsPrimed = true;
 
     // 开关刚打开、当前这首还没有罗马音：重取一次（载荷按开关状态缓存，
     // 不重取就一直是「打开开关也没反应」）。
@@ -1011,7 +1020,9 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     _renderActiveIndex = activeIndex;
 
     Widget content;
-    if (_loading) {
+    // 手里已经有词时不再退回转圈：罗马音开关、换源补 URL 都会触发一次重取，
+    // 之前那种「重取即清屏」在慢链路上就是「歌词全没了只剩转圈」。
+    if (_loading && _lines.isEmpty) {
       content = const Center(
         child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
       );

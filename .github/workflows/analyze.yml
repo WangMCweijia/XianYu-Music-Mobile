@@ -43,3 +43,7 @@ jobs:
       # 平台选择行左对齐：横向弹性滚动被推到负偏移时，整行会右移留出空白
       - name: Source bar align test
         run: flutter test test/source_bar_align_test.dart --reporter expanded
+
+      # 临时几何探针：真机反馈「平台行从屏幕中线开始」，用真实层级量 x 坐标
+      - name: Srcbar geometry probe
+        run: flutter test test/_tmp_srcbar_geometry_test.dart --reporter expanded

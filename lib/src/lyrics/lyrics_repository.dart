@@ -17,6 +17,7 @@ import '../plugin/plugin_provider.dart';
 import '../plugin/plugin_search.dart';
 import '../rust/api.dart';
 import 'lyric_model.dart';
+import 'lyrics_bus.dart';
 
 final Map<String, (I18nMode, List<LyricLine>)> _lyricsCache = {};
 const int _lyricsCacheMax = 24;
@@ -47,7 +48,7 @@ const Duration _playbackYieldLimit = Duration(milliseconds: 1800);
 
 /// 本地歌词（内嵌标签 / 同名 .lrc）读取上限。卡住时不设上限会造成整条取词链
 /// 永不返回 —— 桌面歌词会一直停在上一首的内容上，比「暂无歌词」难查得多。
-const Duration _localLyricTimeout = Duration(seconds: 5);
+const Duration _localLyricTimeout = Duration(seconds: 6);
 
 /// 本地曲目在库里没歌词时，按在线身份补取的上限。
 /// 含「没有在线身份时先按歌名歌手搜索同曲」这一步（搜索自身 5s 上限），
@@ -58,6 +59,16 @@ const Duration _localOnlineFallbackTimeout = Duration(seconds: 12);
 /// 匹配不到也缓存：离线时反复搜索只会白占插件串行锁。
 final Map<String, (QueueItem?, int)> _localMatchCache = {};
 const int _localMatchTtlMs = 10 * 60 * 1000;
+
+/// 本地曲目「直读」拿到的载荷，按文件路径缓存（只存真有歌词的）。
+/// 直读与播放页完全同一条路（Rust 读标签/同名 .lrc → 解析），
+/// 用来给仓库那条链兜底，成功一次之后就基本瞬回。
+final Map<String, String> _localPayloadCache = {};
+
+/// 单次取词的硬上限。超时后本 Future 一定完成并把自己从
+/// [_inflightPayload] 里摘掉 —— 否则一次卡死的 Rust 调用会变成永久的
+/// 僵尸 Future，之后每次取词都合并到它上面，整首歌都只能是「暂无歌词」。
+const Duration _payloadDeadline = Duration(seconds: 20);
 
 /// 载荷里是否真有歌词行。
 ///
@@ -136,6 +147,18 @@ class LyricsRepository {
     final future = _fetchLyricsJson(
       item,
       onRomajiMissing: () => romajiDegraded = true,
+    ).timeout(
+      // 没有这一步，卡在 Rust 侧的调用会让 `_inflightPayload[key]` 永远留在
+      // 表里：之后每次取词都合并到这个不会完成的 Future 上，桌面歌词就会
+      // 一直停在「暂无歌词」，重试多少次都没用。
+      _payloadDeadline,
+      onTimeout: () {
+        AppLog.warn(
+          'lyric',
+          '载荷超时 ${_payloadDeadline.inSeconds}s 放弃本次: ${item.title}',
+        );
+        return '';
+      },
     ).then((payload) {
       // 只缓存真有歌词行的载荷：`{"displayLines":[]}` 这种「空歌词」也缓存的话，
       // 兜底与重试都会直接命中它，永远不会再去取。
@@ -144,6 +167,9 @@ class LyricsRepository {
         if (_payloadCache.length > _lyricsCacheMax) {
           _payloadCache.remove(_payloadCache.keys.first);
         }
+        // 广播给另一条链路（播放页 / 桌面歌词）。本地曲目时 `key` 带 `|romaji`
+        // 后缀，广播用裸路径，对端按 `QueueItem.path` 认领。
+        publishResolvedLyrics(item.path, payload);
       }
       // 「切歌后歌要等很久」的现场取证：耗时、载荷大小、是否降级一目了然。
       AppLog.debug(
@@ -348,18 +374,16 @@ class LyricsRepository {
       AppLog.debug('lyric', 'DLNA 被投曲目无插件歌词: ${item.title}');
       return '';
     }
-    final dbPath = await _ref.read(dbPathProvider.future);
-    final local = await getSongLyricsPayload(dbPath: dbPath, path: item.path)
-        .timeout(
-          _localLyricTimeout,
-          onTimeout: () {
-            AppLog.warn('lyric', '本地歌词读取超时: ${item.title}');
-            return '';
-          },
-        );
+    // 走直读通路（与播放页同一份缓存）：本地曲目两侧看到的一定是同一份歌词。
+    // 该通路命中时会自己广播，这里不用再播一次。
+    final local = await fetchLocalPayload(item.path);
     if (!_payloadHasLines(local)) {
       // 本地没有可用歌词：内嵌标签和同名 .lrc 都没有（Rust 侧返回的是
       // `{"displayLines":[]}`，**不是空串** —— 只判 isEmpty 会让兜底永不触发）。
+      //
+      // 但正则只是快速判空，万一字段格式变了会误判；这时真解析一次，
+      // 宁可多花一次 isolate，也不要出现「播放页能显示、仓库判成空」。
+      if (await _payloadReallyHasLines(local)) return local;
       AppLog.info('lyric', '本地歌词为空: ${item.title}');
       return _fetchOnlineFallback(item);
     }
@@ -382,6 +406,83 @@ class LyricsRepository {
   /// 于是这首歌永远不再补抓。
   bool _payloadHasRomaji(String payload) =>
       RegExp(r'"romaji"\s*:\s*"[^"]').hasMatch(payload);
+
+  /// 正则判空之后再真解析一次，专门用来排除「字段格式变化导致的误判」。
+  Future<bool> _payloadReallyHasLines(String payload) async {
+    if (payload.isEmpty || payload == 'null') return false;
+    try {
+      final lines = await compute(_parseAndNormalizeLyricsJson, payload);
+      return lines.isNotEmpty;
+    } catch (e) {
+      AppLog.debug('lyric', '载荷试解析失败: $e');
+      return false;
+    }
+  }
+
+  /// 把 Rust 侧的结构化载荷解析成展示用歌词行。
+  /// 供「复用另一条链路广播的载荷」使用，加工流程与 [fetchLyrics] 完全一致。
+  Future<List<LyricLine>> parsePayload(String payload) async {
+    if (payload.isEmpty || payload == 'null') return const [];
+    final lines = await compute(_parseAndNormalizeLyricsJson, payload);
+    return localizeLyricLines(lines);
+  }
+
+  /// 本地曲目载荷「直读」：Rust 读内嵌标签/同名 .lrc 后原样返回。
+  ///
+  /// 不经过载荷缓存、并发合并与在线兜底 —— 播放页也用它，所以页面显示得出来的
+  /// 歌词，桌面歌词一定拿得到同一份。成功一次按路径缓存，重试基本瞬回。
+  /// 编辑过歌词要走 [force]，否则会读到旧内容。
+  Future<String> fetchLocalPayload(String path, {bool force = false}) async {
+    if (path.isEmpty) return '';
+    if (!force) {
+      final cached = _localPayloadCache[path];
+      if (cached != null) {
+        // 命中缓存也要广播：桌面歌词可能是在页面已经取过之后才被拉起的。
+        publishResolvedLyrics(path, cached);
+        return cached;
+      }
+    }
+    try {
+      final dbPath = await _ref.read(dbPathProvider.future);
+      final payload = await getSongLyricsPayload(
+        dbPath: dbPath,
+        path: path,
+      ).timeout(
+        _localLyricTimeout,
+        onTimeout: () {
+          AppLog.warn('lyric', '本地歌词直读超时: $path');
+          return '';
+        },
+      );
+      if (_payloadHasLines(payload)) {
+        _localPayloadCache[path] = payload;
+        if (_localPayloadCache.length > _lyricsCacheMax) {
+          _localPayloadCache.remove(_localPayloadCache.keys.first);
+        }
+        publishResolvedLyrics(path, payload);
+      }
+      return payload;
+    } catch (e) {
+      AppLog.warn('lyric', '本地歌词直读失败: $e');
+      return '';
+    }
+  }
+
+  /// 直读并把载荷解析成展示用歌词行。
+  /// 与 [fetchLyrics] 不同，这里不套 [_payloadHasLines] 的快速判空：
+  /// 即便正则误判，解析出来是空数组也不会更糟。
+  Future<List<LyricLine>> fetchLocalLyricsDirect(QueueItem item) async {
+    final payload = await fetchLocalPayload(item.path);
+    if (payload.isEmpty || payload == 'null') return const [];
+    final lines = await parsePayload(payload);
+    if (lines.isNotEmpty) {
+      AppLog.info(
+        'lyric',
+        '本地歌词直读命中: title=${item.title} lines=${lines.length}',
+      );
+    }
+    return lines;
+  }
 
   /// 本地曲目没有可用歌词时的在线兜底。
   ///
@@ -415,6 +516,9 @@ class LyricsRepository {
         'lyric',
         '本地歌词在线兜底: title=${item.title} len=${payload.length}',
       );
+      // 按**本地**路径广播：播放页/桌面歌词认的是队列里的 `item.path`，
+      // 广播成在线曲目的 path 谁也对不上。
+      publishResolvedLyrics(item.path, payload);
       return payload;
     } catch (e) {
       AppLog.warn('lyric', '本地歌词在线兜底失败: $e');

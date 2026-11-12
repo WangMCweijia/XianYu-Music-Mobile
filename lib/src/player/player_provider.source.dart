@@ -1,5 +1,17 @@
 part of 'player_provider.dart';
 
+/// 合集/合辑常见的占位歌手，等价于「歌手未知」（比较前已归一化）。
+const Set<String> _placeholderArtists = {
+  '群星',
+  '未知',
+  '佚名',
+  '未知歌手',
+  '未知艺人',
+  'variousartists',
+  'various',
+  'va',
+};
+
 extension PlayerNotifierSourceSwitch on PlayerNotifier {
   Future<ResolvedMediaUrl?> _tryLxResolve(
       String songInfoJson, List<String> candidates) async {
@@ -913,6 +925,9 @@ extension PlayerNotifierSourceSwitch on PlayerNotifier {
     if (results.isEmpty) return null;
     final wantArtist =
         PlayerNotifier._normSongText(PlayerNotifier._firstArtistOf(artist));
+    // 合集常见「群星/未知/佚名」这类占位歌手，拿它去比只会把正确结果全滤掉；
+    // 视为「歌手未知」，退回只比歌名（同以前的宽松口径），但优先选歌手能对上的。
+    final artistUnknown = wantArtist.isEmpty || _placeholderArtists.contains(wantArtist);
     PluginSearchResult? best;
     var bestScore = 0;
     for (final r in results) {
@@ -920,7 +935,7 @@ extension PlayerNotifierSourceSwitch on PlayerNotifier {
       final candArtist =
           PlayerNotifier._normSongText(PlayerNotifier._firstArtistOf(r.singer));
       var score = 10;
-      if (wantArtist.isEmpty || candArtist.isEmpty) {
+      if (artistUnknown || candArtist.isEmpty) {
         // 任一侧没有歌手信息时无从校验：只能按歌名给个低分，
         // 让「真的对上了歌手」的候选稳压它一头。
         score += 1;

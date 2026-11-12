@@ -638,8 +638,11 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
           return;
         }
       } else {
-        final dbPath = await ref.read(dbPathProvider.future);
-        jsonStr = await getSongLyricsPayload(dbPath: dbPath, path: item.path);
+        // 与桌面歌词共用同一条直读通路（连载荷缓存也同一份）：页面能显示的歌词，
+        // 悬浮窗一定也能拿到，不会因为两条链路各自取词而出现「页面有词、桌面空着」。
+        jsonStr = await ref
+            .read(lyricsRepositoryProvider)
+            .fetchLocalPayload(item.path, force: force);
       }
 
       if (jsonStr.isNotEmpty && jsonStr != 'null') {

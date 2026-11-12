@@ -35,6 +35,18 @@ class CantoneseDetector {
   /// 所以要求**不同字**出现 2 个以上才判定，避免误伤。
   static const String _markers = '嘅咗唔係佢哋冇睇喺嚟嗰咁咩啲乜噉畀攞嘢瞓諗';
 
+  /// 合集常见的占位歌手，等价于「歌手未知」（比较前已归一化）。
+  static const Set<String> _placeholderArtists = {
+    '群星',
+    '未知',
+    '佚名',
+    '未知歌手',
+    '未知艺人',
+    'variousartists',
+    'various',
+    'va',
+  };
+
   final Map<String, (bool, DateTime)> _cache = {};
 
   Future<bool> isCantonese({
@@ -82,7 +94,8 @@ class CantoneseDetector {
   Future<bool?> _probeQq(String title, String artist) async {
     final t = title.trim();
     if (t.isEmpty) return null;
-    final keyword = artist.trim().isEmpty ? t : '$t ${artist.trim()}';
+    final artistText = _isPlaceholderArtist(artist) ? '' : artist.trim();
+    final keyword = artistText.isEmpty ? t : '$t $artistText';
     final searchBody = await _get(
       Uri.https('c.y.qq.com', '/soso/fcgi-bin/client_search_cp', {
         'format': 'json',
@@ -136,6 +149,8 @@ class CantoneseDetector {
 
     final wantTitle = _norm(title);
     final wantArtist = _norm(_firstArtist(artist));
+    final artistUnknown =
+        wantArtist.isEmpty || _placeholderArtists.contains(wantArtist);
     String? bestMid;
     var bestScore = 0;
     for (final item in list) {
@@ -155,7 +170,7 @@ class CantoneseDetector {
             : '',
       );
       var score = 10;
-      if (wantArtist.isEmpty || candArtist.isEmpty) {
+      if (artistUnknown || candArtist.isEmpty) {
         score += 1;
       } else if (candArtist == wantArtist) {
         score += 100;
@@ -200,6 +215,9 @@ class CantoneseDetector {
     t = t.replaceAll(RegExp(r'[\s\-_·•,，、/&+!！?？.。:：]'), '');
     return t.trim();
   }
+
+  static bool _isPlaceholderArtist(String artist) =>
+      _placeholderArtists.contains(_norm(_firstArtist(artist)));
 
   static String _firstArtist(String artist) {
     final parts = artist.split(RegExp(r'[/、,&]'));

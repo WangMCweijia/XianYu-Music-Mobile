@@ -13,6 +13,7 @@ import '../../src/widgets/glass_appbar.dart';
 import '../../src/widgets/floating_search_bar.dart';
 import '../../src/widgets/online_cover.dart';
 import '../../src/widgets/press_scale.dart';
+import '../../src/widgets/source_bar_scroll_view.dart';
 import '../../src/widgets/source_tag.dart';
 import '../../src/widgets/stagger_in.dart';
 import 'online_detail_page.dart';
@@ -196,11 +197,12 @@ class _TopListsPageState extends ConsumerState<TopListsPage>
     _loadBoards(s);
     final ctx = _chipKeys[s.id]?.currentContext;
     if (ctx != null) {
+      // 贴左而不是居中：居中会把靠前的胶囊请求到负滚动位置。
       Scrollable.ensureVisible(
         ctx,
         duration: const Duration(milliseconds: 300),
         curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.5,
+        alignment: 0.0,
       );
     }
   }
@@ -280,25 +282,20 @@ class _TopListsPageState extends ConsumerState<TopListsPage>
   }
 
   Widget _buildSourceBar({bool floating = false}) {
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        padding: EdgeInsets.symmetric(horizontal: floating ? 2 : 14),
-        children: [
-          for (final s in _sources)
-            Padding(
-              key: _chipKeys[s.id],
-              padding: const EdgeInsets.only(right: 8),
-              child: FloatingSourcePill(
-                name: s.name,
-                selected: _selectedId == s.id,
-                onTap: () => _selectSource(_sources.indexOf(s)),
-              ),
+    return SourceBarScrollView(
+      floating: floating,
+      children: [
+        for (final s in _sources)
+          Padding(
+            key: _chipKeys[s.id],
+            padding: const EdgeInsets.only(right: 8),
+            child: FloatingSourcePill(
+              name: s.name,
+              selected: _selectedId == s.id,
+              onTap: () => _selectSource(_sources.indexOf(s)),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 

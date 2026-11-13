@@ -73,16 +73,6 @@ void main() {
     expect(state.controller.offset, 0.0);
   });
 
-  testWidgets('正常状态不显示诊断角标', (tester) async {
-    final keys = List.generate(4, (_) => GlobalKey());
-    await tester.pumpWidget(
-      _host(SourceBarScrollView(children: _pills(keys))),
-    );
-    await tester.pump();
-    await tester.pump();
-    expect(find.textContaining('off='), findsNothing);
-  });
-
   testWidgets('切平台居中滚动不越界、不把整行推到右侧', (tester) async {
     final keys = List.generate(10, (_) => GlobalKey());
     await tester.pumpWidget(

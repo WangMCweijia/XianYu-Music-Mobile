@@ -18,12 +18,10 @@ extension _SearchResultPageSources on _SearchResultPageState {
     if (changed) setState(() {});
     final ctx = _sourceKeys[s.id]?.currentContext;
     if (ctx != null) {
-      Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.5,
-      );
+      // 不用 Scrollable.ensureVisible：alignment 居中会算出负目标（第 0 项
+      // 必为负；目标未完成布局时退化成「坐标 - 视口/2」），整行被推到右
+      // 半边。revealChild 自己量位置并钳进 [0, maxScrollExtent]。
+      SourceBarScrollViewState.maybeOf(ctx)?.revealChild(ctx);
     }
   }
 
@@ -136,12 +134,8 @@ extension _SearchResultPageSources on _SearchResultPageState {
   void _ensureVisibleSource(String id) {
     final ctx = _sourceKeys[id]?.currentContext;
     if (ctx != null) {
-      Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.5,
-      );
+      // 同上：居中滚动一律走 revealChild，负目标在这里被彻底掐死
+      SourceBarScrollViewState.maybeOf(ctx)?.revealChild(ctx);
     }
   }
 

@@ -252,6 +252,7 @@ class AppSettings {
     this.lyricFontSize = 1,
     this.lyricOffsetMs = 0,
     this.showLyricsRomaji = false,
+    this.lyricsCantoneseJyutping = true,
     this.lyricAlignment = 'center',
     this.lyricFontName = '',
     this.lyricFontPath = '',
@@ -359,6 +360,10 @@ class AppSettings {
   final bool showLyricsTranslation;
 
   final bool showLyricsRomaji;
+
+  /// 粤语歌没有罗马音轨时，本地按粤拼（Jyutping）标注。
+  /// 只对识别为粤语的歌生效（见 CantoneseDetector），国语歌不会被标成粤音。
+  final bool lyricsCantoneseJyutping;
 
   final String lyricFontName;
 
@@ -599,6 +604,7 @@ class AppSettings {
     int? libraryMinDurationSeconds,
     bool? showLyricsTranslation,
     bool? showLyricsRomaji,
+    bool? lyricsCantoneseJyutping,
     String? lyricFontName,
     String? lyricFontPath,
     bool? enableWordEffect,
@@ -726,6 +732,8 @@ class AppSettings {
       showLyricsTranslation:
           showLyricsTranslation ?? this.showLyricsTranslation,
       showLyricsRomaji: showLyricsRomaji ?? this.showLyricsRomaji,
+      lyricsCantoneseJyutping:
+          lyricsCantoneseJyutping ?? this.lyricsCantoneseJyutping,
       lyricFontName: lyricFontName ?? this.lyricFontName,
       lyricFontPath: lyricFontPath ?? this.lyricFontPath,
       enableWordEffect: enableWordEffect ?? this.enableWordEffect,
@@ -937,6 +945,8 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       libraryMinDurationSeconds: prefs.getInt('libraryMinDurationSeconds') ?? 0,
       showLyricsTranslation: prefs.getBool('showLyricsTranslation') ?? true,
       showLyricsRomaji: prefs.getBool('showLyricsRomaji') ?? false,
+      lyricsCantoneseJyutping:
+          prefs.getBool('lyricsCantoneseJyutping') ?? true,
       lyricFontName: prefs.getString('lyricFontName') ?? '',
       lyricFontPath: prefs.getString('lyricFontPath') ?? '',
       enableWordEffect: prefs.getBool('enableWordEffect') ?? true,

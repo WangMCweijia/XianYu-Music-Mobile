@@ -15,6 +15,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -66,6 +67,9 @@ class LyricsOverlayService : Service() {
     private var hideWhenPaused = false
     // 是否已收到 Flutter 侧推来的播放态：未收到前窗口保持不可见
     private var playbackSynced = false
+    // 补词请求限频（见 requestLyricsIfNeeded）
+    private var lastLyricsRequestAt = 0L
+    private var lyricsRequestCount = 0
     private var hideInLandscape = false
     private var widthPercent = 92
     private var useLyricFont = false
@@ -178,7 +182,27 @@ class LyricsOverlayService : Service() {
 
     fun setLyrics(json: String) {
         lyricsJson = json
-        lyricView?.setLyrics(parseLyrics(json))
+        val parsed = parseLyrics(json)
+        // 拿到非空歌词就把补词计数清零：换歌后重新给足重试机会。
+        if (parsed.isNotEmpty()) lyricsRequestCount = 0
+        Log.d(TAG, "setLyrics jsonLen=${json.length} lines=${parsed.size}")
+        lyricView?.setLyrics(parsed)
+    }
+
+    /**
+     * 播着但一行歌词都没有时向 Flutter 要一次。切歌瞬间插件引擎在解析播放地址，
+     * 歌词请求很容易空手而归；以前没有这条回补，整首歌就停在「等待播放」。
+     * 限频 3 秒一次、最多 4 次，避免无歌词的歌把链路刷爆。
+     */
+    private fun requestLyricsIfNeeded() {
+        if (lyricView?.hasLyrics() != false) return
+        if (lyricsRequestCount >= MAX_LYRICS_REQUESTS) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastLyricsRequestAt < LYRICS_REQUEST_INTERVAL_MS) return
+        lastLyricsRequestAt = now
+        lyricsRequestCount++
+        Log.d(TAG, "requestLyrics #$lyricsRequestCount")
+        emitEvent("onNeedLyrics")
     }
 
     fun setPlayback(posMs: Long, isPlaying: Boolean) {
@@ -188,6 +212,7 @@ class LyricsOverlayService : Service() {
         lyricView?.setPlayback(posMs, isPlaying)
         playPauseButton?.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         updateVisibility(isPlaying)
+        if (isPlaying) requestLyricsIfNeeded()
     }
 
     fun setSettings(json: String) {
@@ -256,6 +281,7 @@ class LyricsOverlayService : Service() {
         val lockRow = createLockRow()
         val lyric = LyricsOverlayView(this).apply {
             touchHandler = ::onDrag
+            onNeedsLyrics = ::requestLyricsIfNeeded
         }
         val controls = createControls()
         root.addView(
@@ -666,7 +692,10 @@ class LyricsOverlayService : Service() {
             .coerceIn(dp(180), resources.displayMetrics.widthPixels - dp(12))
     }
 
-    private fun overlayHeight(): Int = dp(150)
+    /** 浮窗高度跟随字号：原来是死值 150dp，用户调大字号后文本框不会跟着长，
+     *  观感就是「设置的高度没生效」。 */
+    private fun overlayHeight(): Int =
+        (dp(150) * fontScale.coerceIn(0.7f, 1.5f)).roundToInt()
 
     private fun statusBarHeight(): Int {
         val id = resources.getIdentifier("status_bar_height", "dimen", "android")
@@ -794,6 +823,8 @@ class LyricsOverlayService : Service() {
         private const val NOTIFICATION_ID = 0x52444C59
         private const val CONTROLS_AUTO_HIDE_MS = 4_000L
         private const val BACKGROUND_AUTO_HIDE_MS = 3_000L
+        private const val LYRICS_REQUEST_INTERVAL_MS = 3_000L
+        private const val MAX_LYRICS_REQUESTS = 4
         private const val LONG_PRESS_TIMEOUT_MS = 460L
         private const val DRAG_THRESHOLD_DP = 8
         private const val CONTROL_ANIMATION_MS = 220L

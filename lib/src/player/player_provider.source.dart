@@ -1,5 +1,17 @@
 part of 'player_provider.dart';
 
+/// 合集/合辑常见的占位歌手，等价于「歌手未知」（比较前已归一化）。
+const Set<String> _placeholderArtists = {
+  '群星',
+  '未知',
+  '佚名',
+  '未知歌手',
+  '未知艺人',
+  'variousartists',
+  'various',
+  'va',
+};
+
 extension PlayerNotifierSourceSwitch on PlayerNotifier {
   Future<ResolvedMediaUrl?> _tryLxResolve(
       String songInfoJson, List<String> candidates) async {
@@ -897,16 +909,62 @@ extension PlayerNotifierSourceSwitch on PlayerNotifier {
     state = state.copyWith(current: updated, queue: queue);
   }
 
+  /// 从跨格式兜底的搜索结果里挑同一首歌。
+  ///
+  /// 以前只比歌名，命中第一条就返回，**完全没看歌手** —— 而兜底是按
+  /// 「歌名 + 歌手」去搜的，搜索排序永远把最出名的原唱排在前面：
+  /// 搜「梦伴 关淑怡」，第一条仍是梅艳芳。结果就是点谁的版本都播原唱，
+  /// 而且状态里的曲目身份会被悄悄改写成被选中的那首，用户很难察觉。
+  /// 现在歌手必须对得上，对不上宁可返回 null（如实失败），也不拿别人的
+  /// 录音冒充。
   PluginSearchResult? _pickBestSearchMatch(
     List<PluginSearchResult> results,
     String title,
     String artist,
   ) {
     if (results.isEmpty) return null;
+    final wantArtist =
+        PlayerNotifier._normSongText(PlayerNotifier._firstArtistOf(artist));
+    // 合集常见「群星/未知/佚名」这类占位歌手，拿它去比只会把正确结果全滤掉；
+    // 视为「歌手未知」，退回只比歌名（同以前的宽松口径），但优先选歌手能对上的。
+    final artistUnknown = wantArtist.isEmpty || _placeholderArtists.contains(wantArtist);
+    PluginSearchResult? best;
+    var bestScore = 0;
     for (final r in results) {
-      if (PlayerNotifier._matchOnlineTitle(title, r.name)) return r;
+      if (!PlayerNotifier._matchOnlineTitle(title, r.name)) continue;
+      final candArtist =
+          PlayerNotifier._normSongText(PlayerNotifier._firstArtistOf(r.singer));
+      var score = 10;
+      if (artistUnknown || candArtist.isEmpty) {
+        // 任一侧没有歌手信息时无从校验：只能按歌名给个低分，
+        // 让「真的对上了歌手」的候选稳压它一头。
+        score += 1;
+      } else if (candArtist == wantArtist) {
+        score += 100;
+      } else if (candArtist.contains(wantArtist) ||
+          wantArtist.contains(candArtist)) {
+        score += 60;
+      } else {
+        // 歌手明确不同：不是同一首歌的同一个版本，直接跳过
+        continue;
+      }
+      if (score > bestScore) {
+        best = r;
+        bestScore = score;
+      }
     }
-    return results.first;
+    if (best == null) {
+      AppLog.info(
+        'autoswitch',
+        '跨格式兜底: 无同歌手版本，放弃 title=$title artist=$artist 候选=${results.length}',
+      );
+      return null;
+    }
+    AppLog.info(
+      'autoswitch',
+      '跨格式兜底命中: $title/$artist -> ${best.name}/${best.singer}',
+    );
+    return best;
   }
 
   String _lxSourceKeyForPlatform(String platformLabel, PluginSource plugin) {

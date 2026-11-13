@@ -13,6 +13,7 @@ import '../../src/widgets/glass_appbar.dart';
 import '../../src/widgets/floating_search_bar.dart';
 import '../../src/widgets/online_cover.dart';
 import '../../src/widgets/press_scale.dart';
+import '../../src/widgets/source_bar_scroll_view.dart';
 import '../../src/widgets/source_tag.dart';
 import '../../src/widgets/stagger_in.dart';
 import 'online_detail_page.dart';
@@ -280,25 +281,20 @@ class _TopListsPageState extends ConsumerState<TopListsPage>
   }
 
   Widget _buildSourceBar({bool floating = false}) {
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        padding: EdgeInsets.symmetric(horizontal: floating ? 2 : 14),
-        children: [
-          for (final s in _sources)
-            Padding(
-              key: _chipKeys[s.id],
-              padding: const EdgeInsets.only(right: 8),
-              child: FloatingSourcePill(
-                name: s.name,
-                selected: _selectedId == s.id,
-                onTap: () => _selectSource(_sources.indexOf(s)),
-              ),
+    return SourceBarScrollView(
+      floating: floating,
+      children: [
+        for (final s in _sources)
+          Padding(
+            key: _chipKeys[s.id],
+            padding: const EdgeInsets.only(right: 8),
+            child: FloatingSourcePill(
+              name: s.name,
+              selected: _selectedId == s.id,
+              onTap: () => _selectSource(_sources.indexOf(s)),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 

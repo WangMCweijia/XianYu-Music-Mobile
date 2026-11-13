@@ -146,27 +146,20 @@ extension _SearchResultPageSources on _SearchResultPageState {
   }
 
   Widget _buildSourceBar({bool floating = false}) {
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        padding: EdgeInsets.symmetric(
-          horizontal: floating ? 2 : 14,
-        ),
-        children: [
-          for (final s in _sources)
-            Padding(
-              key: _sourceKeys[s.id],
-              padding: const EdgeInsets.only(right: 8),
-              child: FloatingSourcePill(
-                name: s.name,
-                selected: s.id == _selected.id,
-                onTap: () => _onSourceSelected(s.id),
-              ),
+    return SourceBarScrollView(
+      floating: floating,
+      children: [
+        for (final s in _sources)
+          Padding(
+            key: _sourceKeys[s.id],
+            padding: const EdgeInsets.only(right: 8),
+            child: FloatingSourcePill(
+              name: s.name,
+              selected: s.id == _selected.id,
+              onTap: () => _onSourceSelected(s.id),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }

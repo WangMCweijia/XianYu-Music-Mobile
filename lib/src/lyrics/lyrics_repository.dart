@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show HttpStatus;
 import 'dart:math' as math;
@@ -6,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/application_logger.dart';
 import '../core/app_http.dart';
 import '../core/db_path.dart';
+import '../core/settings.dart';
 import '../i18n/i18n.dart';
 import '../player/player_provider.dart';
 import '../plugin/plugin_backup_import.dart';
@@ -14,12 +16,100 @@ import '../plugin/fallback_modules/types.dart';
 import '../plugin/plugin_provider.dart';
 import '../plugin/plugin_search.dart';
 import '../rust/api.dart';
+import 'cantonese_detect.dart';
+import 'jyutping.dart';
 import 'lyric_model.dart';
+import 'lyrics_bus.dart';
 
 final Map<String, (I18nMode, List<LyricLine>)> _lyricsCache = {};
 const int _lyricsCacheMax = 24;
 
 final Map<String, String> _payloadCache = {};
+
+/// 本地曲目补抓到的罗马音轨，值为 (轨道文本, 写入时刻毫秒)。
+/// 键带歌名歌手：下载目录里同名文件换了歌也不会串味。
+///
+/// 取不到（空串）只缓存很短时间：离线时试过一次，联网后必须能自己好起来 ——
+/// 永久缓存空结果会让人以为「修了还是没声」，比慢一点更糟。
+final Map<String, (String, int)> _localRomajiCache = {};
+const int _localRomajiMissTtlMs = 60 * 1000;
+
+/// 同一曲目的载荷抓取合并成一个 Future。
+///
+/// 播放页、桌面/锁屏歌词桥、悬浮歌词、状态栏歌词、在线预缓存会几乎同时请求
+/// 同一首歌；各跑一遍会重复调用插件引擎（单运行时、串行），把紧接着的
+/// 「取播放地址」排到后面，表现为切歌后很久才起播。
+final Map<String, Future<String>> _inflightPayload = {};
+
+/// 单纯为了补罗马音而向原生接口发的请求，等待上限。
+/// 超过就先用插件已有的罗马音（或先不出罗马音）把主歌词放出去。
+const Duration _romajiNativeTimeout = Duration(milliseconds: 1500);
+
+/// 起播解析期间留给播放地址的最长时间（见 `_yieldToPlayback`）。
+const Duration _playbackYieldLimit = Duration(milliseconds: 1800);
+
+/// 载荷里是否含汉字。粤拼只对中文歌词有意义，假名/韩文/纯英文歌词直接跳过，
+/// 省掉一次粤语识别（可能是一次网络请求）。
+final RegExp _hasHanText = RegExp(r'[\u3400-\u9FFF\uF900-\uFAFF]');
+
+/// 本地歌词（内嵌标签 / 同名 .lrc）读取上限。卡住时不设上限会造成整条取词链
+/// 永不返回 —— 桌面歌词会一直停在上一首的内容上，比「暂无歌词」难查得多。
+const Duration _localLyricTimeout = Duration(seconds: 6);
+
+/// 本地曲目在库里没歌词时，按在线身份补取的上限。
+/// 含「没有在线身份时先按歌名歌手搜索同曲」这一步（搜索自身 5s 上限），
+/// 所以要留够两段的时间。
+const Duration _localOnlineFallbackTimeout = Duration(seconds: 12);
+
+/// 本地曲目按歌名歌手匹配到的在线同曲，值为 (曲目, 写入时刻毫秒)。
+/// 匹配不到也缓存：离线时反复搜索只会白占插件串行锁。
+final Map<String, (QueueItem?, int)> _localMatchCache = {};
+const int _localMatchTtlMs = 10 * 60 * 1000;
+
+/// 本地曲目「直读」拿到的载荷，按文件路径缓存（只存真有歌词的）。
+/// 直读与播放页完全同一条路（Rust 读标签/同名 .lrc → 解析），
+/// 用来给仓库那条链兜底，成功一次之后就基本瞬回。
+final Map<String, String> _localPayloadCache = {};
+
+/// 单次取词的硬上限。超时后本 Future 一定完成并把自己从
+/// [_inflightPayload] 里摘掉 —— 否则一次卡死的 Rust 调用会变成永久的
+/// 僵尸 Future，之后每次取词都合并到它上面，整首歌都只能是「暂无歌词」。
+const Duration _payloadDeadline = Duration(seconds: 20);
+
+/// 载荷解析（isolate）上限。compute 在极端情况下不返回，不能让它把取词链挂死。
+const Duration _parseDeadline = Duration(seconds: 10);
+
+/// 原生歌词接口（Rust 侧网络请求）上限。超过就先按「没有译文/罗马音」继续，
+/// 不让一个不响应的源站把整首歌的歌词扣住。
+const Duration _nativeLyricTimeout = Duration(seconds: 6);
+
+/// 载荷里是否真有歌词行。
+///
+/// 关键：本地「没有歌词」时 Rust 侧返回的是 `{"displayLines":[]}` 这种**非空**
+/// JSON，不是空串。只判 `isEmpty` 会把「空歌词」当成「有歌词」，兜底永远不触发，
+/// 界面就永远停在「暂无歌词」。
+///
+/// 这里刻意用正则而不是 `jsonDecode`：这份载荷可能几百 KB（逐字歌词），
+/// 在切歌的主线程上再解析一遍就是可见的卡顿，而解析结果 isolates 侧本来就要做。
+/// 行数组的每个元素都是对象，所以「非空」一定长成 `[{`（紧凑输出无空白）。
+final RegExp _nonEmptyLyricLines = RegExp(
+  r'"(?:displayLines|display_lines|lines)"\s*:\s*\[\s*\{',
+);
+
+bool _payloadHasLines(String payload) {
+  if (payload.isEmpty || payload == 'null') return false;
+  if (_nonEmptyLyricLines.hasMatch(payload)) return true;
+  // 三个已知的行数组键都不在：这不是本 App 的载荷格式，按「有内容」放行。
+  // 否则字段名一变，在线歌就会被判成空载荷，缓存与推送一起失效。
+  return !payload.contains('"displayLines"') &&
+      !payload.contains('"display_lines"') &&
+      !payload.contains('"lines"');
+}
+
+/// 罗马音开关会改变载荷内容：关着就不注入、也不额外请求原生接口，
+/// 所以缓存必须带上这个维度，否则「先播歌、后开开关」会一直空到换歌。
+String _lyricsCacheKey(String path, bool wantRomaji) =>
+    wantRomaji ? '$path|romaji' : path;
 
 void _cacheLyrics(String path, List<LyricLine> lines) {
   if (path.isEmpty || lines.isEmpty) return;
@@ -35,18 +125,41 @@ class LyricsRepository {
   final Ref _ref;
 
   Future<List<LyricLine>> fetchLyrics(QueueItem item) async {
-    final cached = _lyricsCache[item.path];
+    final key = _lyricsCacheKey(item.path, _wantsRomaji);
+    final cached = _lyricsCache[key];
     if (cached != null && cached.$2.isNotEmpty) {
       if (cached.$1 == I18n.mode) return cached.$2;
-      _lyricsCache.remove(item.path);
+      _lyricsCache.remove(key);
     }
     try {
+      final sw = Stopwatch()..start();
       final jsonStr = await fetchPayloadJson(item);
-      if (jsonStr.isEmpty || jsonStr == 'null') return const [];
-      final parsed = await compute(_parseLyricsJson, jsonStr);
-      final lines = await compute(_normalizeBoundaries, parsed);
+      if (jsonStr.isEmpty || jsonStr == 'null') {
+        AppLog.info(
+          'lyric',
+          '仓库取词为空 ${sw.elapsedMilliseconds}ms: ${item.title}',
+        );
+        return const [];
+      }
+      // 解析 + 边界归一在同一次 compute 里做完：两次 isolate 往返要把整份
+      // 歌词列表复制两遍，切歌时是可见的延迟。
+      //
+      // 这里也必须设上限：isolate 起不来（低内存/被系统压着）时 compute 会一直
+      // 挂着不返回，调用方就永远停在「加载中」。
+      final lines = await compute(
+        _parseAndNormalizeLyricsJson,
+        jsonStr,
+      ).timeout(_parseDeadline, onTimeout: () {
+        AppLog.warn('lyric', '载荷解析超时 ${_parseDeadline.inSeconds}s: ${item.title}');
+        return const <LyricLine>[];
+      });
       final localized = localizeLyricLines(lines);
-      if (localized.isNotEmpty) _cacheLyrics(item.path, localized);
+      if (localized.isNotEmpty) _cacheLyrics(key, localized);
+      AppLog.info(
+        'lyric',
+        '仓库取词完成 ${sw.elapsedMilliseconds}ms lines=${localized.length}: '
+            '${item.title}',
+      );
       return localized;
     } catch (e) {
       AppLog.warn('lyric', '歌词载荷处理异常: $e');
@@ -54,84 +167,279 @@ class LyricsRepository {
     }
   }
 
-  Future<String> fetchPayloadJson(QueueItem item) async {
-    final cached = _payloadCache[item.path];
-    if (cached != null) return cached;
-    final payload = await _fetchLyricsJson(item);
-    if (payload.isNotEmpty && payload != 'null') {
-      _payloadCache[item.path] = payload;
-      if (_payloadCache.length > _lyricsCacheMax) {
-        _payloadCache.remove(_payloadCache.keys.first);
+  Future<String> fetchPayloadJson(QueueItem item) {
+    final wantRomaji = _wantsRomaji;
+    final key = _lyricsCacheKey(item.path, wantRomaji);
+    final cached = _payloadCache[key];
+    if (cached != null) return Future.value(cached);
+    final inflight = _inflightPayload[key];
+    if (inflight != null) return inflight;
+    // 因等原生接口超时而「暂时没有罗马音」的载荷不进缓存：
+    // 否则这首歌在缓存有效期内会一直缺罗马音，只能靠重开开关补救。
+    var romajiDegraded = false;
+    final sw = Stopwatch()..start();
+    final future = _fetchLyricsJson(
+      item,
+      onRomajiMissing: () => romajiDegraded = true,
+    ).timeout(
+      // 没有这一步，卡在 Rust 侧的调用会让 `_inflightPayload[key]` 永远留在
+      // 表里：之后每次取词都合并到这个不会完成的 Future 上，桌面歌词就会
+      // 一直停在「暂无歌词」，重试多少次都没用。
+      _payloadDeadline,
+      onTimeout: () {
+        AppLog.warn(
+          'lyric',
+          '载荷超时 ${_payloadDeadline.inSeconds}s 放弃本次: ${item.title}',
+        );
+        return '';
+      },
+    ).then((payload) {
+      // 只缓存真有歌词行的载荷：`{"displayLines":[]}` 这种「空歌词」也缓存的话，
+      // 兜底与重试都会直接命中它，永远不会再去取。
+      if (!romajiDegraded && _payloadHasLines(payload)) {
+        _payloadCache[key] = payload;
+        if (_payloadCache.length > _lyricsCacheMax) {
+          _payloadCache.remove(_payloadCache.keys.first);
+        }
+        // 广播给另一条链路（播放页 / 桌面歌词）。本地曲目时 `key` 带 `|romaji`
+        // 后缀，广播用裸路径，对端按 `QueueItem.path` 认领。
+        publishResolvedLyrics(item.path, payload);
       }
-    }
-    return payload;
+      // 「切歌后歌要等很久」的现场取证：耗时、载荷大小、是否降级一目了然。
+      AppLog.debug(
+        'lyric',
+        '载荷耗时 ${sw.elapsedMilliseconds}ms len=${payload.length} '
+            'romaji=$wantRomaji degraded=$romajiDegraded',
+      );
+      return payload;
+    }).whenComplete(() => _inflightPayload.remove(key));
+    _inflightPayload[key] = future;
+    return future;
   }
 
-  Future<String> _fetchLyricsJson(QueueItem item) async {
-    if (item.isOnline) {
+  /// 用户是否希望看到罗马音（主歌词页或桌面歌词任一开启即可）。
+  /// 只影响「是否额外向原生接口补抓罗马音」，不影响已有数据的解析。
+  bool get _wantsRomaji {
+    final settings = _ref.read(settingsProvider).valueOrNull;
+    return (settings?.showLyricsRomaji ?? false) ||
+        (settings?.floatingLyricsShowRomanization ?? false);
+  }
+
+  /// 解析完成后再把罗马音轨按时间戳注入载荷。
+  /// 开关关闭或没有罗马音轨时原样返回，主歌词链路完全不受影响。
+  ///
+  /// 没有现成罗马音轨时（粤语歌基本都没有，见 [JyutpingConverter]），
+  /// 退一步做「粤语识别 + 本地粤拼转写」——但只有确认是粤语歌才写，
+  /// 国语歌按粤音标注是错的。
+  Future<String> _withRomaji(
+    String payload,
+    String romajiTrack,
+    bool wantRomaji, {
+    QueueItem? item,
+  }) async {
+    if (!wantRomaji) return payload;
+    if (payload.isEmpty || payload == 'null') return payload;
+    if (romajiTrack.isNotEmpty) {
+      try {
+        return injectRomajiIntoPayload(payload, romajiTrack);
+      } catch (e) {
+        AppLog.warn('lyric', '罗马音注入失败: $e');
+        return payload;
+      }
+    }
+    return _withJyutping(payload, item);
+  }
+
+  /// 粤语歌没有罗马音轨时，本地按粤拼标注。
+  ///
+  /// 三个前置条件都满足才动手：设置开着、载荷里确实有汉字、识别为粤语。
+  /// 任一条不成立就原样返回 —— 这条路径只做加法，不影响原有歌词。
+  Future<String> _withJyutping(String payload, QueueItem? item) async {
+    if (item == null) return payload;
+    final settings = _ref.read(settingsProvider).valueOrNull;
+    if (!(settings?.lyricsCantoneseJyutping ?? true)) return payload;
+    // 拼音/假名/韩文歌词不用粤拼。正则直接扫载荷原文，省一次 jsonDecode。
+    if (!_hasHanText.hasMatch(payload)) return payload;
+    bool cantonese;
+    try {
+      cantonese = await CantoneseDetector.instance.isCantonese(
+        title: item.title,
+        artist: item.artist,
+        lyricText: payload,
+      );
+    } catch (e) {
+      AppLog.debug('lyric', '粤语识别失败: $e');
+      return payload;
+    }
+    if (!cantonese) return payload;
+    try {
+      await JyutpingConverter.ensureLoaded();
+      if (!JyutpingConverter.isReady) return payload;
+      final result = injectJyutpingIntoPayload(payload);
+      if (!identical(result, payload) && result != payload) {
+        AppLog.info('lyric', '粤拼已生成: ${item.title}');
+      }
+      return result;
+    } catch (e) {
+      AppLog.warn('lyric', '粤拼生成失败: $e');
+      return payload;
+    }
+  }
+
+  /// 起播解析期间给播放地址让路。
+  ///
+  /// Rust 插件宿主对同一个插件实例加了 `call_lock`（同一 JS runtime 严格串行），
+  /// 歌词抓取若先拿到锁，「取播放地址」就得排在它后面 —— 歌词越重，起播越慢。
+  /// 这也是「带罗马音的歌要等很久才能播放」的直接原因：罗马音多一路原生请求。
+  /// 这里轮询起播状态，最多让 [_playbackYieldLimit]，避免异常时无限等。
+  Future<void> _yieldToPlayback() async {
+    const step = Duration(milliseconds: 80);
+    var waited = Duration.zero;
+    while (waited < _playbackYieldLimit) {
+      bool resolving;
+      try {
+        resolving = _ref.read(playerProvider).resolving;
+      } catch (_) {
+        return;
+      }
+      if (!resolving) return;
+      await Future<void>.delayed(step);
+      waited += step;
+    }
+  }
+
+  Future<String> _fetchLyricsJson(
+    QueueItem item, {
+    void Function()? onRomajiMissing,
+    bool forceOnline = false,
+  }) async {
+    if (item.isOnline || forceOnline) {
+      final swOnline = Stopwatch()..start();
+      AppLog.info(
+        'lyric',
+        '在线取词 start: ${item.title}/${item.artist} path=${item.path} '
+            'forceOnline=$forceOnline',
+      );
+      await _yieldToPlayback();
+      Future<Map<String, dynamic>?>? nativePending;
+      // 同一个原生请求只发一次；不同调用点只是等待方式不同（有没有上限）。
+      // 超时只作用于「等」，不取消请求，后续仍能拿到完整结果。
+      Future<Map<String, dynamic>?> nativeOnce({Duration? timeout}) async {
+        final pending = nativePending ??= fetchNativeLyricResult(item);
+        // 以前 `timeout == null` 就是无限等（补译文那一路），而这段是「插件宿主
+        // 串行锁 + Rust 网络请求」，源站不响应时会一直挂着 —— 整首歌的歌词都被
+        // 它扣住，详情页只能一直转圈。现在任何调用点都有上限。
+        return await pending.timeout(
+          timeout ?? const Duration(seconds: 9),
+          onTimeout: () => null,
+        );
+      }
+
+      final wantRomaji = _wantsRomaji;
+      // 罗马音只有插件不给时才需要问原生接口。原生请求与插件请求互不依赖，
+      // 先并行起步：插件结果回来时它往往已经就绪，省掉两段网络串行叠加。
+      if (wantRomaji) {
+        unawaited(
+          nativeOnce(timeout: _romajiNativeTimeout).then<void>(
+            (_) {},
+            onError: (Object e) => AppLog.debug('lyric', '罗马音原生预取失败: $e'),
+          ),
+        );
+      }
       final pluginRes = await _fetchPluginLyric(item);
+      AppLog.info(
+        'lyric',
+        '在线取词 插件返回 ${swOnline.elapsedMilliseconds}ms '
+            'hasResult=${pluginRes != null}',
+      );
       if (pluginRes != null) {
         final mainText = pickPluginMainText(pluginRes);
         final tlyric = (pluginRes['tlyric'] as String?)?.trim() ?? '';
+        var rlyric = (pluginRes['rlyric'] as String?)?.trim() ?? '';
         final encrypted = pluginLyricLooksEncrypted(mainText);
         AppLog.debug(
           'lyric',
-          '插件歌词: keys=${pluginRes.keys.toList()} mainLen=${mainText.length} encrypted=$encrypted tLen=${tlyric.length}',
+          '插件歌词: keys=${pluginRes.keys.toList()} mainLen=${mainText.length} encrypted=$encrypted tLen=${tlyric.length} rLen=${rlyric.length}',
         );
         if (encrypted) {
           final decrypted = await decryptEncryptedLyric(mainText);
           if (decrypted != null && decrypted.trim().isNotEmpty) {
             AppLog.debug('lyric', '插件歌词: 密文解密成功 len=${decrypted.length}');
-            var combined = decrypted;
+            var translation = '';
             if (tlyric.isNotEmpty && pluginLyricLooksEncrypted(tlyric)) {
               final dt = await decryptEncryptedLyric(tlyric);
               if (dt != null && dt.trim().isNotEmpty) {
-                combined = composePluginLyricsRaw(
-                  combined,
-                  alignTranslationToMainLyric(combined, dt),
-                );
+                translation = alignTranslationToMainLyric(decrypted, dt);
               }
             }
-            final payload = await parseLyrics(rawLyrics: combined);
-            return payload;
+            if (rlyric.isNotEmpty && pluginLyricLooksEncrypted(rlyric)) {
+              final rt = await decryptEncryptedLyric(rlyric);
+              rlyric = (rt != null && rt.trim().isNotEmpty) ? rt.trim() : '';
+            }
+            final payload = await parseLyrics(
+              rawLyrics: composePluginLyricsRaw(decrypted, translation),
+            );
+            return await _withRomaji(payload, rlyric, wantRomaji, item: item);
           }
           AppLog.warn('lyric', '插件歌词: 密文解密失败，无可用歌词');
           return '';
         }
-        if (mainText.trim().isNotEmpty && !encrypted) {
+        if (mainText.trim().isNotEmpty) {
+          var translation = '';
           if (tlyric.isNotEmpty && !mainText.contains('tlyric')) {
-            return parseLyrics(
-              rawLyrics: composePluginLyricsRaw(
-                mainText,
-                alignTranslationToMainLyric(mainText, tlyric),
-              ),
-            );
+            translation = alignTranslationToMainLyric(mainText, tlyric);
           }
-          if (tlyric.isEmpty) {
-            final native = await fetchNativeLyricResult(item);
-            final nTrans = native?['tlyric']?.trim() ?? '';
-            if (nTrans.isNotEmpty && !mainText.contains('tlyric')) {
-              return parseLyrics(
-                rawLyrics: composePluginLyricsRaw(
-                  mainText,
-                  alignTranslationToMainLyric(mainText, nTrans),
-                ),
-              );
+          var romajiTrack = rlyric;
+          final needTranslationNative = translation.isEmpty && tlyric.isEmpty;
+          final needRomajiNative = romajiTrack.isEmpty && wantRomaji;
+          // 译文缺失（原有逻辑）或用户要看罗马音而插件没给，才向原生接口补一次。
+          // 单纯补罗马音时给短上限，译文兜底保持原样不设限。
+          var romajiDegraded = false;
+          if (needTranslationNative || needRomajiNative) {
+            final native = await nativeOnce(
+              timeout: needTranslationNative ? null : _romajiNativeTimeout,
+            );
+            if (native == null && needRomajiNative) romajiDegraded = true;
+            if (native != null) {
+              final nTrans = (native['tlyric'] ?? '').trim();
+              final nRoma = (native['rlyric'] ?? '').trim();
+              if (translation.isEmpty &&
+                  nTrans.isNotEmpty &&
+                  !mainText.contains('tlyric')) {
+                translation = alignTranslationToMainLyric(mainText, nTrans);
+              }
+              if (romajiTrack.isEmpty && nRoma.isNotEmpty) {
+                romajiTrack = nRoma;
+              }
             }
           }
-          return parseLyrics(rawLyrics: mainText);
+          final payload = await parseLyrics(
+            rawLyrics: composePluginLyricsRaw(mainText, translation),
+          );
+          final result = await _withRomaji(
+            payload,
+            romajiTrack,
+            wantRomaji,
+            item: item,
+          );
+          if (romajiDegraded && romajiTrack.isEmpty) onRomajiMissing?.call();
+          return result;
         }
       } else {
         AppLog.debug('lyric', '插件歌词: 无结果');
       }
-      final native = await fetchNativeLyricResult(item);
+      final native = await nativeOnce();
       if (native != null) {
         final lx = (native['lxlyric'] ?? '').trim();
-        if (lx.isNotEmpty) return parseLyrics(rawLyrics: lx);
         final main = (native['lyric'] ?? '').trim();
         final t = (native['tlyric'] ?? '').trim();
+        final r = (native['rlyric'] ?? '').trim();
+        if (lx.isNotEmpty) {
+          final payload = await parseLyrics(rawLyrics: lx);
+          return await _withRomaji(payload, r, wantRomaji, item: item);
+        }
         if (main.isNotEmpty) {
-          return parseLyrics(
+          final payload = await parseLyrics(
             rawLyrics: t.isNotEmpty && !main.contains('tlyric')
                 ? composePluginLyricsRaw(
                     main,
@@ -139,6 +447,7 @@ class LyricsRepository {
                   )
                 : main,
           );
+          return await _withRomaji(payload, r, wantRomaji, item: item);
         }
         AppLog.warn('lyric', '原生歌词兜底: 结果主文本为空 keys=${native.keys.toList()}');
       } else {
@@ -168,8 +477,281 @@ class LyricsRepository {
       AppLog.debug('lyric', 'DLNA 被投曲目无插件歌词: ${item.title}');
       return '';
     }
-    final dbPath = await _ref.read(dbPathProvider.future);
-    return getSongLyricsPayload(dbPath: dbPath, path: item.path);
+    // 走直读通路（与播放页同一份缓存）：本地曲目两侧看到的一定是同一份歌词。
+    // 该通路命中时会自己广播，这里不用再播一次。
+    final local = await fetchLocalPayload(item.path);
+    if (!_payloadHasLines(local)) {
+      // 本地没有可用歌词：内嵌标签和同名 .lrc 都没有（Rust 侧返回的是
+      // `{"displayLines":[]}`，**不是空串** —— 只判 isEmpty 会让兜底永不触发）。
+      //
+      // 但正则只是快速判空，万一字段格式变了会误判；这时真解析一次，
+      // 宁可多花一次 isolate，也不要出现「播放页能显示、仓库判成空」。
+      if (await _payloadReallyHasLines(local)) return local;
+      AppLog.info('lyric', '本地歌词为空: ${item.title}');
+      return _fetchOnlineFallback(item);
+    }
+    // 本地歌词是下载/导入时存下来的主歌词，本身没有罗马音 —— 以前走到这里
+    // 就直接返回，开关打开也没有东西可显示。这里补一路：按曲目身份去在线取
+    // 罗马音轨，拿到后按时间戳注入，和在线歌曲走同一个 [injectRomajiIntoPayload]。
+    if (!_wantsRomaji || _payloadHasRomaji(local)) return local;
+    final romajiTrack = await _localRomajiTrack(item);
+    if (romajiTrack.isEmpty) {
+      // 这次没补到（离线 / 没匹配到）就不让载荷进缓存，
+      // 联网后重新取歌词能自己补上。
+      onRomajiMissing?.call();
+      return local;
+    }
+    return await _withRomaji(local, romajiTrack, true, item: item);
+  }
+
+  /// 载荷里是否已有**非空**罗马音。
+  /// 以前只判断是否出现 `"romaji"` 这个键，一个空串也被当成「有」，
+  /// 于是这首歌永远不再补抓。
+  bool _payloadHasRomaji(String payload) =>
+      RegExp(r'"romaji"\s*:\s*"[^"]').hasMatch(payload);
+
+  /// 正则判空之后再真解析一次，专门用来排除「字段格式变化导致的误判」。
+  Future<bool> _payloadReallyHasLines(String payload) async {
+    if (payload.isEmpty || payload == 'null') return false;
+    try {
+      final lines = await compute(_parseAndNormalizeLyricsJson, payload);
+      return lines.isNotEmpty;
+    } catch (e) {
+      AppLog.debug('lyric', '载荷试解析失败: $e');
+      return false;
+    }
+  }
+
+  /// 把 Rust 侧的结构化载荷解析成展示用歌词行。
+  /// 供「复用另一条链路广播的载荷」使用，加工流程与 [fetchLyrics] 完全一致。
+  Future<List<LyricLine>> parsePayload(String payload) async {
+    if (payload.isEmpty || payload == 'null') return const [];
+    final lines = await compute(_parseAndNormalizeLyricsJson, payload);
+    return localizeLyricLines(lines);
+  }
+
+  /// 本地曲目载荷「直读」：Rust 读内嵌标签/同名 .lrc 后原样返回。
+  ///
+  /// 不经过载荷缓存、并发合并与在线兜底 —— 播放页也用它，所以页面显示得出来的
+  /// 歌词，桌面歌词一定拿得到同一份。成功一次按路径缓存，重试基本瞬回。
+  /// 编辑过歌词要走 [force]，否则会读到旧内容。
+  Future<String> fetchLocalPayload(String path, {bool force = false}) async {
+    if (path.isEmpty) return '';
+    if (!force) {
+      final cached = _localPayloadCache[path];
+      if (cached != null) {
+        // 命中缓存也要广播：桌面歌词可能是在页面已经取过之后才被拉起的。
+        publishResolvedLyrics(path, cached);
+        return cached;
+      }
+    }
+    try {
+      final dbPath = await _ref.read(dbPathProvider.future);
+      final payload = await getSongLyricsPayload(
+        dbPath: dbPath,
+        path: path,
+      ).timeout(
+        _localLyricTimeout,
+        onTimeout: () {
+          AppLog.warn('lyric', '本地歌词直读超时: $path');
+          return '';
+        },
+      );
+      if (_payloadHasLines(payload)) {
+        _localPayloadCache[path] = payload;
+        if (_localPayloadCache.length > _lyricsCacheMax) {
+          _localPayloadCache.remove(_localPayloadCache.keys.first);
+        }
+        publishResolvedLyrics(path, payload);
+      }
+      return payload;
+    } catch (e) {
+      AppLog.warn('lyric', '本地歌词直读失败: $e');
+      return '';
+    }
+  }
+
+  /// 直读并把载荷解析成展示用歌词行。
+  /// 与 [fetchLyrics] 不同，这里不套 [_payloadHasLines] 的快速判空：
+  /// 即便正则误判，解析出来是空数组也不会更糟。
+  Future<List<LyricLine>> fetchLocalLyricsDirect(QueueItem item) async {
+    final payload = await fetchLocalPayload(item.path);
+    if (payload.isEmpty || payload == 'null') return const [];
+    final lines = await parsePayload(payload);
+    if (lines.isNotEmpty) {
+      AppLog.info(
+        'lyric',
+        '本地歌词直读命中: title=${item.title} lines=${lines.length}',
+      );
+    }
+    return lines;
+  }
+
+  /// 本地曲目没有可用歌词时的在线兜底。
+  ///
+  /// 两级：先看有没有在线身份（下载来的歌带 `onlineSongJson`，`withLocalFile`
+  /// 会保留）；没有就按歌名+歌手匹配一首同曲。匹配要过歌手/歌名归一化互相包含
+  /// 且时长差 ≤3s —— 同名歌太多，取第一条会把歌词配到别人身上，那种错配比
+  /// 没有歌词更难发现。取不到就返回空串，不影响本地播放。
+  Future<String> _fetchOnlineFallback(QueueItem item) async {
+    var probe = item;
+    if (!_hasOnlineIdentity(probe)) {
+      probe = (await _searchOnlineSong(item)) ?? item;
+    }
+    if (!_hasOnlineIdentity(probe)) {
+      AppLog.info('lyric', '本地歌词缺失且无在线同曲: ${item.title}');
+      return '';
+    }
+    try {
+      AppLog.info(
+        'lyric',
+        '本地歌词缺失，按在线身份补取: ${item.title} -> ${probe.title}/${probe.artist}',
+      );
+      final payload = await _fetchLyricsJson(probe, forceOnline: true).timeout(
+        _localOnlineFallbackTimeout,
+        onTimeout: () => '',
+      );
+      if (!_payloadHasLines(payload)) {
+        AppLog.debug('lyric', '本地歌词在线兜底为空: title=${item.title}');
+        return '';
+      }
+      AppLog.debug(
+        'lyric',
+        '本地歌词在线兜底: title=${item.title} len=${payload.length}',
+      );
+      // 按**本地**路径广播：播放页/桌面歌词认的是队列里的 `item.path`，
+      // 广播成在线曲目的 path 谁也对不上。
+      publishResolvedLyrics(item.path, payload);
+      return payload;
+    } catch (e) {
+      AppLog.warn('lyric', '本地歌词在线兜底失败: $e');
+      return '';
+    }
+  }
+
+  bool _hasOnlineIdentity(QueueItem item) =>
+      (item.onlineSongJson?.isNotEmpty ?? false) || item.onlineInfoJson != null;
+
+  /// 按歌名+歌手找在线同曲，结果（含「没找到」）缓存 10 分钟。
+  /// 离线时反复搜索只会白占插件串行锁，还会拖慢起播。
+  Future<QueueItem?> _searchOnlineSong(QueueItem item) async {
+    final key = '${item.path}|${item.title}|${item.artist}';
+    final hit = _localMatchCache[key];
+    if (hit != null &&
+        DateTime.now().millisecondsSinceEpoch - hit.$2 < _localMatchTtlMs) {
+      return hit.$1;
+    }
+    final found = await _searchOnlineSameSong(item);
+    if (_localMatchCache.length > _lyricsCacheMax) _localMatchCache.clear();
+    _localMatchCache[key] = (found, DateTime.now().millisecondsSinceEpoch);
+    return found;
+  }
+
+  /// 本地曲目的罗马音轨。取不到（离线、匹配不到同曲）就返回空串，
+  /// 主歌词照常显示，不影响播放。
+  Future<String> _localRomajiTrack(QueueItem item) async {
+    final key = '${item.path}|${item.title}|${item.artist}';
+    final hit = _localRomajiCache[key];
+    if (hit != null) {
+      final fresh = hit.$1.isNotEmpty ||
+          DateTime.now().millisecondsSinceEpoch - hit.$2 < _localRomajiMissTtlMs;
+      if (fresh) return hit.$1;
+    }
+
+    var track = '';
+    try {
+      var probe = item;
+      // 早期版本本地化时把 onlineSongJson 一并丢了，队列里剩下的只有
+      // 歌名/歌手，只能去在线搜一首同曲来充当「曲目身份」。
+      if (!_hasOnlineIdentity(probe)) {
+        probe = (await _searchOnlineSong(item)) ?? item;
+      }
+      if (_hasOnlineIdentity(probe)) {
+        // 罗马音是「锦上添花」：它拖住整条取词链的代价是本地歌前几十秒没有
+        // 任何歌词（桌面歌词会在 6 秒后按超时出结果再接重试）。这里给硬上限。
+        track = await _romajiTrackFromOnline(probe).timeout(
+          const Duration(seconds: 4),
+          onTimeout: () {
+            AppLog.debug('lyric', '本地罗马音: 超时放弃 title=${item.title}');
+            return '';
+          },
+        );
+      }
+    } catch (e) {
+      AppLog.warn('lyric', '本地罗马音补抓异常: $e');
+    }
+    if (_localRomajiCache.length > _lyricsCacheMax) _localRomajiCache.clear();
+    _localRomajiCache[key] = (track, DateTime.now().millisecondsSinceEpoch);
+    AppLog.debug(
+      'lyric',
+      '本地罗马音: title=${item.title} len=${track.length}',
+    );
+    return track;
+  }
+
+  /// 罗马音轨只有两个来源：原生歌词接口（官方 rlyric）和插件返回的 rlyric。
+  /// 原生优先 —— 它直连平台歌词接口，不占插件运行时那把串行锁。
+  Future<String> _romajiTrackFromOnline(QueueItem item) async {
+    try {
+      final native = await fetchNativeLyricResult(item).timeout(
+        const Duration(seconds: 4),
+        onTimeout: () => null,
+      );
+      final r = (native?['rlyric'] ?? '').trim();
+      if (r.isNotEmpty) return r;
+    } catch (e) {
+      AppLog.debug('lyric', '本地罗马音: 原生接口失败 $e');
+    }
+    try {
+      final plugin = await _fetchPluginLyric(item);
+      var r = (plugin?['rlyric'] as String?)?.trim() ?? '';
+      if (r.isEmpty) return '';
+      if (pluginLyricLooksEncrypted(r)) {
+        final dt = await decryptEncryptedLyric(r);
+        r = (dt ?? '').trim();
+      }
+      return r;
+    } catch (e) {
+      AppLog.debug('lyric', '本地罗马音: 插件失败 $e');
+      return '';
+    }
+  }
+
+  /// 按歌名+歌手在在线源里找同曲，供「本地化时丢了在线身份」的老曲目使用：
+  /// 既用来补罗马音，也用来给「本地完全没有歌词」的曲目取主歌词。
+  /// 必须校验歌手与时长：同名歌太多，取第一条会把歌词配到别人身上，
+  /// 那种错配比没有歌词更难发现。
+  Future<QueueItem?> _searchOnlineSameSong(QueueItem item) async {
+    final name = item.title.trim();
+    if (name.isEmpty) return null;
+    final keyword =
+        item.artist.trim().isEmpty ? name : '$name ${item.artist.trim()}';
+    try {
+      final manager = _ref.read(pluginManagerProvider);
+      final engine = await _ref.read(pluginEngineProvider.future);
+      final service = PluginSearchService(engine, manager.sources);
+      final all = await service
+          .searchAll(keyword, limit: 10)
+          .timeout(const Duration(seconds: 5));
+      for (final (ps, items) in all) {
+        for (final r in items) {
+          if (!_sameSongField(item.artist, r.singer)) continue;
+          if (!_sameSongField(item.title, r.name)) continue;
+          final qi = service.toQueueItem(ps, r);
+          if (item.durationMs > 0 &&
+              qi.durationMs > 0 &&
+              (qi.durationMs - item.durationMs).abs() > 3000) {
+            continue;
+          }
+          AppLog.info('lyric', '本地曲目在线匹配: ${qi.title} - ${qi.artist}');
+          return qi;
+        }
+      }
+      AppLog.debug('lyric', '本地曲目: 无在线匹配 keyword=$keyword');
+    } catch (e) {
+      AppLog.warn('lyric', '本地曲目: 在线搜索失败 $e');
+    }
+    return null;
   }
 
   /// 拉取 DLNA 直传歌词原文（桌面端 httpd 伺服的纯文本）。
@@ -303,6 +885,17 @@ class LyricsRepository {
       final raw = await fetchLyricFromSource(
         source: sourceKey,
         songInfoJson: jsonEncode(songInfo),
+      ).timeout(
+        // 这是 Rust 侧的网络请求，源站不响应时会长时间挂着。以前没有上限，
+        // 整条取词链就靠最外层 20s 兜底陪跑 —— 详情页于是长时间转圈。
+        _nativeLyricTimeout,
+        onTimeout: () {
+          AppLog.warn(
+            'lyric',
+            '原生歌词兜底超时 ${_nativeLyricTimeout.inSeconds}s: sourceKey=$sourceKey',
+          );
+          return '';
+        },
       );
       if (raw.isEmpty || raw == 'null') return null;
       final obj = jsonDecode(raw) as Map<String, dynamic>;
@@ -447,6 +1040,10 @@ bool _looksLikeQrcBody(String text) {
 
 /// 组装插件歌词 raw：主文 + 已对齐的译文。
 /// QRC 主文必须补文档外壳：Rust 只在该文本含 `</QrcInfos>` 时才挂载尾部译文 LRC。
+///
+/// 罗马音**不**走这里：解析器要用脚本特征猜「这一行是不是罗马音」，
+/// 猜错就会落进译文槽，届时开关既关不掉、也会因检测不到罗马音轨而一直是禁用态。
+/// 罗马音改由 [injectRomajiIntoPayload] 在解析完成后按时间戳写入 `romaji` 字段。
 String composePluginLyricsRaw(String mainBody, String translationLrc) {
   if (mainBody.isEmpty || translationLrc.isEmpty) {
     return '$mainBody\n$translationLrc';
@@ -462,6 +1059,105 @@ String composePluginLyricsRaw(String mainBody, String translationLrc) {
       '</LyricInfo>\n'
       '</QrcInfos>\n'
       '$translationLrc';
+}
+
+/// 把罗马音轨（日语罗马字 / 粤语粤拼 / 韩语罗马字）解析成「时间戳 + 文本」。
+List<(int, String)> _parseAuxTrackEntries(String text) {
+  final entries = <(int, String)>[];
+  for (final raw in text.split('\n')) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    final ms = _lrcLineStampMs(line);
+    if (ms == null) continue;
+    final qrc = _qrcLineStampPattern.firstMatch(line);
+    final lrc = _lrcLineStampPattern.firstMatch(line);
+    final stripped = qrc != null
+        ? line.substring(qrc.end)
+        : (lrc == null ? line : line.substring(lrc.end));
+    // QQ 的 roma 带逐字时间标注 `(start,dur)`，一并清掉。
+    final body = _cleanLyricText(stripped.trim());
+    if (body.isEmpty) continue;
+    entries.add((ms, body));
+  }
+  return entries;
+}
+
+/// 歌名/歌手比对前的归一化：去括号补充、去标点与空白、统一小写。
+/// 只服务「找同曲」这一件事，宁可漏判也不要错配。
+String _normSongField(String s) {
+  var t = s.toLowerCase();
+  t = t.replaceAll(RegExp(r'[\(（\[【].*?[\)）\]】]'), ' ');
+  t = t.replaceAll(RegExp(r'[\s\-_·•,，、/&+!！?？.。:：]'), '');
+  return t;
+}
+
+/// 两个歌名/歌手是否算同一首：完全相等，或一方包含另一方
+/// （「周杰伦」vs「周杰伦/杨瑞代」、「某曲」vs「某曲 (Live)」这类写法）。
+/// 任一方为空视为不可比 —— 空歌手匹配一切，会把罗马音配到随便哪首歌上。
+bool _sameSongField(String a, String b) {
+  final x = _normSongField(a);
+  final y = _normSongField(b);
+  if (x.isEmpty || y.isEmpty) return false;
+  return x == y || x.contains(y) || y.contains(x);
+}
+
+int _displayLineMs(Map<String, dynamic> line) {
+  final t = line['time'];
+  if (t is num) return (t * 1000).round();
+  final tm = line['timeMs'];
+  if (tm is num) return tm.round();
+  return -1;
+}
+
+/// 把罗马音轨按时间戳写进已解析载荷的 `romaji` 字段。
+///
+/// 只填空位、不改原文、不动译文：命中哪一行由时间戳决定，不依赖脚本特征。
+String injectRomajiIntoPayload(String payloadJson, String romajiTrack) {
+  final entries = _parseAuxTrackEntries(romajiTrack);
+  if (entries.isEmpty) return payloadJson;
+
+  final dynamic decoded;
+  try {
+    decoded = jsonDecode(payloadJson);
+  } catch (_) {
+    return payloadJson;
+  }
+  if (decoded is! Map<String, dynamic>) return payloadJson;
+  final lines = decoded['displayLines'];
+  if (lines is! List || lines.isEmpty) return payloadJson;
+
+  final lineMs = <int>[];
+  for (final item in lines) {
+    lineMs.add(item is Map<String, dynamic> ? _displayLineMs(item) : -1);
+  }
+
+  final joined = <int, List<String>>{};
+  for (final (ms, body) in entries) {
+    var best = -1;
+    var bestDiff = 1 << 62;
+    for (var i = 0; i < lineMs.length; i++) {
+      if (lineMs[i] < 0) continue;
+      final diff = (lineMs[i] - ms).abs();
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = i;
+      }
+    }
+    if (best < 0 || bestDiff > _maxAlignWindowMs) continue;
+    joined.putIfAbsent(best, () => <String>[]).add(body);
+  }
+  if (joined.isEmpty) return payloadJson;
+
+  var changed = false;
+  joined.forEach((index, parts) {
+    final line = lines[index];
+    if (line is! Map<String, dynamic>) return;
+    final existing = (line['romaji'] as String?)?.trim() ?? '';
+    if (existing.isNotEmpty) return;
+    line['romaji'] = parts.join(' ');
+    changed = true;
+  });
+  return changed ? jsonEncode(decoded) : payloadJson;
 }
 
 /// 主歌词里按出现顺序取出的行级时间戳（毫秒）。
@@ -485,11 +1181,14 @@ int _alignWindowMs(List<int> stamps, int index) {
 
 /// 把插件返回的翻译行对齐到主歌词时间轴。
 /// 有时间戳的吸附到最近主行（半行窗口内），其余按剩余行序补，多出的挂最后一行。
-String alignTranslationToMainLyric(String mainContent, String translation) {
+String alignTranslationToMainLyric(String mainContent, String translation) =>
+    _alignAuxTrackToMainLyric(mainContent, translation);
+
+String _alignAuxTrackToMainLyric(String mainContent, String auxText) {
   final stamps = _mainLineStamps(mainContent);
   final bodies = <String>[];
   final times = <int?>[];
-  for (final raw in translation.split('\n')) {
+  for (final raw in auxText.split('\n')) {
     final line = raw.trim();
     if (line.isEmpty) continue;
     final lrcMatch = _lrcLineStampPattern.firstMatch(line);
@@ -502,7 +1201,7 @@ String alignTranslationToMainLyric(String mainContent, String translation) {
     bodies.add(body);
     times.add(_lrcLineStampMs(line));
   }
-  if (stamps.isEmpty || bodies.isEmpty) return translation;
+  if (stamps.isEmpty || bodies.isEmpty) return auxText;
 
   final taken = <int>{};
   final target = List<int?>.filled(bodies.length, null);
@@ -552,6 +1251,10 @@ String alignTranslationToMainLyric(String mainContent, String translation) {
   }
   return out.join('\n');
 }
+
+/// 一次 isolate 往返完成「解析 + 边界归一」。
+List<LyricLine> _parseAndNormalizeLyricsJson(String jsonStr) =>
+    _normalizeBoundaries(_parseLyricsJson(jsonStr));
 
 List<LyricLine> _parseLyricsJson(String jsonStr) {
   final map = jsonDecode(jsonStr) as Map<String, dynamic>;

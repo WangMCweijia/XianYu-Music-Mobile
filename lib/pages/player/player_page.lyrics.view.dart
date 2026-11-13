@@ -108,6 +108,28 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
 
   bool _hasRomaji = false;
 
+  /// 刚把罗马音开关打开、但当前载荷里没有罗马音时置位，触发一次重取。
+  bool _wantRomajiReload = false;
+
+  /// 设置项首次对齐完成。首帧 `_showRomaji` 还是默认 false，若把这一次
+  /// 当成「用户刚打开开关」，每次进播放页都会白白触发一次 force 重取
+  /// （清页面缓存 → 又回到加载态，慢链路上看起来就是一直转圈）。
+  bool _settingsPrimed = false;
+
+  /// 播放页自己这条取词链的硬上限。
+  ///
+  /// 链路上有「插件宿主串行锁」「原生歌词接口」「isolate 解析」几段都可能长时间
+  /// 不返回；任何一段卡住，[_loading] 就永远为真，详情页只剩一个转圈 —— 比
+  /// 「暂无歌词」难查得多。这里给自己兜底：超时一定结束转圈，后续真拿到词
+  /// 还可以由总线/下一次取词补上。
+  static const Duration _pageFetchDeadline = Duration(seconds: 22);
+
+  /// 取词代号：并发的多次取词（切歌、开关重取）只有最后一次能改 UI 收尾。
+  int _fetchSeq = 0;
+
+  /// 是否正在复用总线（桌面歌词那条链）广播来的载荷。
+  bool _adoptingBusPayload = false;
+
   late final Ticker _ticker;
   final Stopwatch _anchorWatch = Stopwatch();
 
@@ -301,6 +323,12 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     _progress.value = p;
     _ticker = createTicker(_onTick);
     _syncTicker();
+    // 另一条链（桌面歌词/迷你预览）先拿到词时直接复用，避免「桌面有词、详情页转圈」。
+    resolvedLyricsNotifier.addListener(_onResolvedLyricsBroadcast);
+    // 进来之前可能已经广播过（notifier 里留着上一次事件），主动认领一次。
+    Future.microtask(() {
+      if (mounted) _onResolvedLyricsBroadcast();
+    });
     _fetchLyrics();
   }
 
@@ -310,7 +338,11 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     final pathChanged = oldWidget.current?.path != widget.current?.path;
     final onlineJsonChanged =
         oldWidget.current?.onlineSongJson != widget.current?.onlineSongJson;
-    if (pathChanged || onlineJsonChanged) {
+    // 同一首曲子的「在线身份」变了（换源、音质探测补上 URL）不必重取歌词：
+    // 载荷按 path 缓存，重取反而会把已经出词的页面重新拖回加载态。只有手里
+    // 还没有词的时候，才值得为了新的在线身份再试一次。
+    final needFetch = pathChanged || (onlineJsonChanged && _lines.isEmpty);
+    if (needFetch) {
       final p = ref.read(playerProvider).position;
       _anchorPos = p;
       _displayPos = p;
@@ -434,6 +466,9 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     _draggingIndexTimer?.cancel();
     _pendingCenterFallback?.cancel();
     _viewportChangeDebounce?.cancel();
+    resolvedLyricsNotifier.removeListener(_onResolvedLyricsBroadcast);
+    // 界面已经不在，等回来的结果不再有意义：代号加一让收尾逻辑跳过。
+    _fetchSeq++;
     _clearBlurSnapshots();
     _scrollCtrl.dispose();
     super.dispose();
@@ -578,29 +613,79 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _fetchLyrics() async {
+  /// 取词唯一入口：外包一层硬上限。
+  ///
+  /// 内部链路（插件串行锁、原生歌词接口、isolate 解析）任何一段不返回，
+  /// 都会让 [_loading] 永远为真 —— 表现就是详情页一直转圈。这里保证「一定收尾」，
+  /// 真拿到词时仍由内部或总线广播把内容补上。
+  Future<void> _fetchLyrics({bool force = false}) async {
+    final seq = ++_fetchSeq;
+    final sw = Stopwatch()..start();
+    final item = widget.current;
+    if (item != null) {
+      AppLog.info(
+        'lyric',
+        '播放页取词 start: ${item.title} online=${item.isOnline} force=$force',
+      );
+    }
+    try {
+      await _fetchLyricsInner(force: force).timeout(_pageFetchDeadline);
+    } catch (e) {
+      if (mounted && seq == _fetchSeq) {
+        AppLog.warn('lyric', '播放页取词异常/超时 ${sw.elapsedMilliseconds}ms: $e');
+      }
+    }
+    if (!mounted || seq != _fetchSeq) return;
+    if (_loading) {
+      AppLog.warn(
+        'lyric',
+        '播放页取词未收尾 ${sw.elapsedMilliseconds}ms，强制结束加载态',
+      );
+      setState(() => _loading = false);
+    }
+    AppLog.info(
+      'lyric',
+      '播放页取词 done ${sw.elapsedMilliseconds}ms lines=${_lines.length}',
+    );
+  }
+
+  Future<void> _fetchLyricsInner({bool force = false}) async {
     final item = widget.current;
     if (item == null) return;
-    if (_loadedPath == item.path && _lines.isNotEmpty) return;
+    // 在线曲目已经走过一次仓库取词，后面不要再按「本地兜底」重来一遍 ——
+    // 那会把一次 20s 的等待变成两次串行 20s，看起来就像永远加载不完。
+    var reposAttempted = false;
+    if (!force) {
+      if (_loadedPath == item.path && _lines.isNotEmpty) return;
 
-    final cached = _lyricsCache[item.path];
-    if (cached != null && cached.isNotEmpty) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _loadedPath = item.path;
-          _lines = cached;
-        });
-        _reportRomaji();
-        _lastActiveIndex = -1;
-        _renderActiveIndex = -1;
-        _pendingCenterJump = true;
-        _autoScrollToActiveLine(force: true);
+      final cached = _lyricsCache[item.path];
+      if (cached != null && cached.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _loadedPath = item.path;
+            _lines = cached;
+          });
+          _reportRomaji();
+          _lastActiveIndex = -1;
+          _renderActiveIndex = -1;
+          _pendingCenterJump = true;
+          _autoScrollToActiveLine(force: true);
+        }
+        return;
       }
-      return;
+    } else {
+      // 罗马音是按开关决定要不要取的，开开关后必须丢掉旧结果重取一次。
+      _lyricsCache.remove(item.path);
     }
+    // 换歌先清空：新歌取不到词时不能把上一首的歌词留在屏幕上
+    // （那是「本地歌串上一首在线歌词」的观感）。同一首的重取则保留，
+    // 避免 force 重取失败反而把正在看的词擦掉。
+    final sameSong = _loadedPath == item.path;
+    if (!sameSong) _wantRomajiReload = false;
 
     setState(() {
+      if (!sameSong) _lines = const [];
       _loading = true;
       _loadedPath = item.path;
     });
@@ -611,9 +696,16 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
       // cloud:// 曲目 isOnline 恒为 false（仅插件/直链源为 true），
       // 必须显式加入，否则网盘曲目永远走本地 DB 分支拿不到内嵌歌词
       if (item.isOnline || item.path.startsWith('cloud://')) {
+        reposAttempted = true;
+        final swRepo = Stopwatch()..start();
         final repoLines = await ref
             .read(lyricsRepositoryProvider)
             .fetchLyrics(item);
+        AppLog.info(
+          'lyric',
+          '播放页取词 仓库返回 ${swRepo.elapsedMilliseconds}ms '
+              'lines=${repoLines.length}: ${item.title}',
+        );
         final viewLines = _lyricLinesToViewItems(repoLines);
         if (viewLines.isNotEmpty && mounted) {
           _cacheLyrics(item.path, viewLines);
@@ -629,8 +721,11 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
           return;
         }
       } else {
-        final dbPath = await ref.read(dbPathProvider.future);
-        jsonStr = await getSongLyricsPayload(dbPath: dbPath, path: item.path);
+        // 与桌面歌词共用同一条直读通路（连载荷缓存也同一份）：页面能显示的歌词，
+        // 悬浮窗一定也能拿到，不会因为两条链路各自取词而出现「页面有词、桌面空着」。
+        jsonStr = await ref
+            .read(lyricsRepositoryProvider)
+            .fetchLocalPayload(item.path, force: force);
       }
 
       if (jsonStr.isNotEmpty && jsonStr != 'null') {
@@ -652,21 +747,94 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
         }
       }
 
+      // 本地库里没有歌词（老版本下载没落库、或只剩同名 .lrc 却没被读到）：
+      // 交给仓库层按在线身份兜底一次。桌面/悬浮歌词走的是同一条路径，
+      // 不补这一步就会出现「桌面有词、播放页空着」。
+      // 在线曲目上面已经问过仓库（`reposAttempted`），不再重复一遍。
+      if (!reposAttempted && (jsonStr.isEmpty || jsonStr == 'null')) {
+        final repoLines = await ref
+            .read(lyricsRepositoryProvider)
+            .fetchLyrics(item);
+        final viewLines = _lyricLinesToViewItems(repoLines);
+        if (viewLines.isNotEmpty && mounted) {
+          _cacheLyrics(item.path, viewLines);
+          setState(() {
+            _lines = viewLines;
+            _loading = false;
+          });
+          _reportRomaji();
+          _lastActiveIndex = -1;
+          _renderActiveIndex = -1;
+          _pendingCenterJump = true;
+          _autoScrollToActiveLine(force: true);
+          return;
+        }
+      }
+
       if (mounted) {
-        setState(() {
-          _lines = [];
-          _loading = false;
-        });
+        // force 重取没拿到东西时不要把手里的词擦掉，否则「重新取一次」
+        // 反而把正在看的歌词变成「暂无歌词」。真的空着时才落到空态。
+        setState(() => _loading = false);
         _reportRomaji();
       }
     } catch (_) {
       if (mounted) {
-        setState(() {
-          _lines = [];
-          _loading = false;
-        });
+        setState(() => _loading = false);
         _reportRomaji();
       }
+    }
+  }
+
+  // ==================== 复用另一条链广播的载荷 ====================
+
+  /// 桌面歌词/迷你预览那条链先拿到词时，这里直接复用。
+  ///
+  /// 两条链各取一次词，任何一条慢（插件串行锁、原生接口无响应）都会让详情页
+  /// 一直转圈，而桌面歌词那边可能早就出词了。有了这一步，「谁先拿到谁广播，
+  /// 另一条直接用」，不会再出现「桌面有词、详情页转圈」。
+  void _onResolvedLyricsBroadcast() {
+    final ev = resolvedLyricsNotifier.value;
+    final item = widget.current;
+    if (ev == null || item == null) return;
+    if (ev.path != item.path) return;
+    if (_lines.isNotEmpty || _adoptingBusPayload) return;
+    _adoptingBusPayload = true;
+    unawaited(_adoptBusPayload(ev.payload, item.path));
+  }
+
+  Future<void> _adoptBusPayload(String payload, String path) async {
+    try {
+      final lines = await ref
+          .read(lyricsRepositoryProvider)
+          .parsePayload(payload)
+          .timeout(
+            const Duration(seconds: 8),
+            onTimeout: () => const <LyricLine>[],
+          );
+      final viewLines = _lyricLinesToViewItems(lines);
+      if (!mounted || viewLines.isEmpty) return;
+      if (path != widget.current?.path) return;
+      _cacheLyrics(path, viewLines);
+      setState(() {
+        _lines = viewLines;
+        _loading = false;
+        _loadedPath = path;
+      });
+      // 自己那条链还在等：提高代号，避免它回来把这份结果顶掉又转一次圈。
+      _fetchSeq++;
+      AppLog.info(
+        'lyric',
+        '播放页复用广播载荷: title=${widget.current?.title} lines=${viewLines.length}',
+      );
+      _reportRomaji();
+      _lastActiveIndex = -1;
+      _renderActiveIndex = -1;
+      _pendingCenterJump = true;
+      _autoScrollToActiveLine(force: true);
+    } catch (e) {
+      AppLog.debug('lyric', '播放页复用广播载荷失败: $e');
+    } finally {
+      _adoptingBusPayload = false;
     }
   }
 
@@ -819,10 +987,23 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
         if (mounted) _tryPendingCenterJump();
       });
     }
+    if (_settingsPrimed && newShowRomaji && !_showRomaji) {
+      _wantRomajiReload = true;
+    }
     _fontSizeIdx = newFontSizeIdx;
     _showTranslation = newShowTranslation;
     _showRomaji = newShowRomaji;
     _align = newAlign;
+    _settingsPrimed = true;
+
+    // 开关刚打开、当前这首还没有罗马音：重取一次（载荷按开关状态缓存，
+    // 不重取就一直是「打开开关也没反应」）。
+    if (_wantRomajiReload && !_hasRomaji && !_loading && _lines.isNotEmpty) {
+      _wantRomajiReload = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _fetchLyrics(force: true);
+      });
+    }
     final lyricFontFamily = (settings?.lyricFontName ?? '').isNotEmpty
         ? settings!.lyricFontName
         : null;
@@ -839,7 +1020,9 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     _renderActiveIndex = activeIndex;
 
     Widget content;
-    if (_loading) {
+    // 手里已经有词时不再退回转圈：罗马音开关、换源补 URL 都会触发一次重取，
+    // 之前那种「重取即清屏」在慢链路上就是「歌词全没了只剩转圈」。
+    if (_loading && _lines.isEmpty) {
       content = const Center(
         child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
       );

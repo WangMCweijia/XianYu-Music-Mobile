@@ -34,6 +34,7 @@ import '../../src/widgets/stagger_in.dart';
 import '../../src/widgets/glass_settings.dart';
 import '../../src/widgets/floating_search_bar.dart';
 import '../../src/widgets/list_metrics.dart';
+import '../../src/widgets/source_bar_scroll_view.dart';
 import '../../src/widgets/source_tag.dart';
 import '../../src/widgets/online_cover.dart';
 import '../../src/widgets/press_scale.dart';

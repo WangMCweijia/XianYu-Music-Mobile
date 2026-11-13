@@ -350,7 +350,11 @@ final class OnlineQualityProbeRegistry {
           existing.resolved.isNotEmpty ||
           existing.seeded ||
           existing.failedRecently) {
-        if (existing.seeded) existing.attachResolver(resolve);
+        // 复用已解析的档位缓存，但解析回调必须换成调用方这一次的：
+        // 旧闭包捕获的是上一次的 item / songJson，一旦两个不同曲目共用
+        // 同一个 key（历史键退化或插件 id 为空），复用旧闭包就会把别人的
+        // 直链当成本曲目返回 —— 表现是「点谁的版本都播第一首」。
+        existing.attachResolver(resolve);
         return existing;
       }
       _registry.remove(songKey);

@@ -43,15 +43,23 @@ class QueueItem {
   bool get isCloud => path.startsWith('cloud://') && cloudInfoJson != null;
 
   /// 本地优先：播链歌已下载到本地时，把播放源换成对应本地文件。
-  /// 清空在线信息使 isOnline 判定走本地播放管线（不再在线解析），
+  /// 清空 [onlineInfoJson] 使 isOnline 判定走本地播放管线（不再在线解析），
   /// 保留标题/歌手/专辑/封面等展示元数据；队列里的播链原样保留，
   /// 本地文件被清理后重新播放会回退在线。
+  ///
+  /// 但 [onlineSongJson] / [source] 必须留着：本地文件本身没有 mid/hash，
+  /// 一旦丢掉，「按曲目 id 才能查」的东西（罗马音、逐行译文）就全部失效 ——
+  /// 表现就是本地歌开着罗马音开关也不显示，只能靠歌名去在线猜。
+  /// isOnline 只看 [onlineInfoJson]，留着这两个不会让它走在线播放链。
   QueueItem withLocalFile(String filePath) => QueueItem(
         path: filePath,
         title: title,
         artist: artist,
         album: album,
         durationMs: durationMs,
+        onlineSongJson: onlineSongJson,
+        onlineQuality: onlineQuality,
+        source: source,
         coverUrl: coverUrl,
         coverPath: coverPath,
         fromDailyRecommend: fromDailyRecommend,

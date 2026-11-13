@@ -38,6 +38,9 @@ data class LyricLineData(
 class LyricsOverlayView(context: Context) : View(context) {
     var touchHandler: ((View, MotionEvent) -> Boolean)? = null
 
+    /** 正在播放却一行歌词都没有时回调：请 Flutter 侧补推/重取。 */
+    var onNeedsLyrics: (() -> Unit)? = null
+
     private var lines: List<LyricLineData> = emptyList()
     private var anchorPositionMs = 0L
     private var anchorRealtimeMs = SystemClock.elapsedRealtime()
@@ -74,6 +77,8 @@ class LyricsOverlayView(context: Context) : View(context) {
         lines = data
         invalidate()
     }
+
+    fun hasLyrics(): Boolean = lines.isNotEmpty()
 
     fun setPlayback(positionMs: Long, isPlaying: Boolean) {
         anchorPositionMs = positionMs
@@ -134,7 +139,10 @@ class LyricsOverlayView(context: Context) : View(context) {
         val position = currentPosition()
         val line = findCurrentLine(position)
         if (line == null) {
-            drawCenteredLine(canvas, "等待播放…", height * 0.48f)
+            // 播着却没有歌词时向 Flutter 侧要一次（服务里有限频），
+            // 避免切歌那一刻取词失败后整首歌都停在占位文案上。
+            if (playing) onNeedsLyrics?.invoke()
+            drawPlaceholder(canvas)
         } else {
             drawLyricLine(canvas, line, position)
         }
@@ -215,16 +223,26 @@ class LyricsOverlayView(context: Context) : View(context) {
         }
     }
 
-    private fun drawCenteredLine(canvas: Canvas, text: String, centerY: Float) {
-        basePaint.textSize = sp(17.6f) * fontScale
-        basePaint.color = withAlpha(textColor, opacity)
-        val x = (width - basePaint.measureText(text)) / 2f
-        canvas.drawText(
-            text,
-            x,
-            centerY - (basePaint.fontMetrics.ascent + basePaint.fontMetrics.descent) / 2f,
-            basePaint,
+    /**
+     * 占位文案。字号/基线必须与 [drawLyricLine] 的主行完全一致，
+     * 否则会像「设置的歌词高度没生效」——以前这里写死 17.6sp + height*0.48，
+     * 和正文的 20sp + 垂直居中不是同一套算法。
+     *
+     * 文案区分两种状态：有曲目在放说明是「这首歌没有歌词」，
+     * 没在放才是「等待播放」。两者混用会让人以为播放卡住了。
+     */
+    private fun drawPlaceholder(canvas: Canvas) {
+        val text = if (playing) "暂无歌词…" else "等待播放…"
+        val mainSize = sp(20f) * fontScale
+        basePaint.textSize = mainSize
+        basePaint.color = withAlpha(
+            if (unplayedColor != 0) unplayedColor else textColor,
+            opacity * 0.72f,
         )
+        val fm = basePaint.fontMetrics
+        val baseline = height / 2f - (fm.ascent + fm.descent) / 2f
+        val x = (width - basePaint.measureText(text)) / 2f
+        canvas.drawText(text, x, baseline, basePaint)
     }
 
     /**
@@ -288,16 +306,10 @@ class LyricsOverlayView(context: Context) : View(context) {
             val mid = (lo + hi + 1) shr 1
             if (lines[mid].startMs <= positionMs) lo = mid else hi = mid - 1
         }
-        val line = lines[lo]
-        if (line.endMs > 0 && positionMs >= line.endMs) {
-            for (i in lo + 1 until lines.size) {
-                val l = lines[i]
-                if (l.startMs <= positionMs && (l.endMs <= 0 || positionMs < l.endMs)) return l
-                if (l.startMs > positionMs) break
-            }
-            return null
-        }
-        return line
+        // 行间空隙（间奏、行尾留白）保持上一行，不再返回 null。
+        // Dart 侧 _normalizeBoundaries 给每行留了 25%（最多 300ms）的尾部空隙，
+        // 原先这里按「找不到当前行」处理，表现就是每两句之间闪一下「等待播放」。
+        return lines[lo]
     }
 
     private fun withAlpha(color: Int, alpha: Float): Int = Color.argb(

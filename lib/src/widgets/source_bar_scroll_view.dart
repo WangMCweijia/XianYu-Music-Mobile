@@ -10,13 +10,19 @@ import '../core/application_logger.dart';
 /// 内容会被推到右边，左侧空出一大段、右侧胶囊被裁（线上反馈「平台选择
 /// 这一行不是左对齐」）。
 ///
-/// 负偏移有四条来路，全部堵住，缺一条就会在真机上复现：
+/// 负偏移有五条来路，全部堵住，缺一条就会在真机上复现：
 /// 1. 弹性物理静止越界 —— 用 ClampingScrollPhysics；
 /// 2. 越界后被别的东西改了物理/尺寸、没人再跑回弹 —— 监听 controller，
 ///    只要 offset < 0 立刻回正（不等滚动结束）；
 /// 3. 内容/视口尺寸变化后位置没重算 —— 监听 ScrollMetricsNotification；
 /// 4. PageStorage 把越界位置存下来、下次进页面又读回去 —— 关掉
-///    keepScrollOffset。
+///    keepScrollOffset；
+/// 5. `Scrollable.ensureVisible(alignment: 0.5)` 自己算出负目标 —— 居中
+///    式子是 `子项内容坐标 - (视口宽 - 子项宽) / 2`，第 0 项本来就出负数；
+///    目标若还没完成布局（宽 0），式子退化成 `坐标 - 视口宽 / 2`，整行
+///    正好被推到右半边（第一颗胶囊落在屏幕中央、左侧空一大段、右侧胶囊
+///    被裁）。所以切平台一律走 [SourceBarScrollViewState.revealChild]：
+///    自己量位置，目标显式钳进 `[0, maxScrollExtent]`，尺寸无效就不滚。
 class SourceBarScrollView extends StatefulWidget {
   const SourceBarScrollView({
     super.key,
@@ -52,6 +58,10 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 仅供布局回归测试驱动一个负偏移，验证回正兜底。
   @visibleForTesting
   ScrollController get controller => _controller;
+
+  /// 从任意子项的 context 找回这一行的 State，调用方不必再挂 GlobalKey。
+  static SourceBarScrollViewState? maybeOf(BuildContext context) =>
+      context.findAncestorStateOfType<SourceBarScrollViewState>();
 
   @override
   void initState() {
@@ -91,14 +101,48 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   @visibleForTesting
   void clampToStart() => _clampToStart();
 
+  /// 把某个子项居中滚到可见。
+  ///
+  /// 取代 `Scrollable.ensureVisible(alignment: 0.5)`，两点区别：
+  /// - 目标位置由本行按 render box 自己量，并显式钳进
+  ///   `[0, maxScrollExtent]`，不可能给出负值；
+  /// - 目标还没完成布局（宽 0）或视口宽 0 时直接放弃，不会用退化式子把
+  ///   整行推到右半边。
+  void revealChild(
+    BuildContext childContext, {
+    Duration duration = const Duration(milliseconds: 300),
+    Curve curve = Curves.fastLinearToSlowEaseIn,
+  }) {
+    if (!mounted || !_controller.hasClients) return;
+    final pos = _controller.position;
+    final selfBox = context.findRenderObject() as RenderBox?;
+    final childBox = childContext.findRenderObject() as RenderBox?;
+    if (selfBox == null || childBox == null) return;
+    if (!selfBox.hasSize || !childBox.hasSize) return;
+    if (pos.viewportDimension <= 0 || childBox.size.width <= 0) return;
+    final double dx = childBox.localToGlobal(Offset.zero, ancestor: selfBox).dx;
+    // dx 已含当前滚动位移，换回内容坐标再算居中位置
+    final double contentX = dx + pos.pixels;
+    final double target = (contentX -
+            (pos.viewportDimension - childBox.size.width) / 2)
+        .clamp(0.0, pos.maxScrollExtent)
+        .toDouble();
+    if (target < 0) return;
+    if ((target - pos.pixels).abs() < 0.5) return;
+    _controller.animateTo(target, duration: duration, curve: curve);
+  }
+
   /// 兜底之后如果几何仍然不对（越界到负值、视口被挤窄），留一条日志。
   ///
-  /// 正常滚动（用户自己往右滑，offset > 0）不算异常，不会打日志。
+  /// 正常滚动（用户自己往右滑，offset > 0）不算异常，不会打日志。日志带上
+  /// `w`（本行宽）与 `gx`（本行左缘的屏幕坐标）：这两个正常而内容仍偏右，
+  /// 说明是别处把内容推走了，可直接据此定位。
   void _warnIfAbnormal() {
     if (!mounted || !_controller.hasClients) return;
     final pos = _controller.position;
     final box = context.findRenderObject() as RenderBox?;
     final ownWidth = box?.size.width ?? 0;
+    final globalX = box == null ? 0.0 : box.localToGlobal(Offset.zero).dx;
     final bad = pos.pixels < -0.5 ||
         (ownWidth > 0 && pos.viewportDimension < ownWidth - 4);
     if (!bad) return;
@@ -110,7 +154,8 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
       '[srcbar] 异常 '
       'off=${pos.pixels.toStringAsFixed(0)} '
       'vw=${pos.viewportDimension.toStringAsFixed(0)} '
-      'w=${ownWidth.toStringAsFixed(0)}',
+      'w=${ownWidth.toStringAsFixed(0)} '
+      'gx=${globalX.toStringAsFixed(0)}',
     );
   }
 
@@ -118,6 +163,9 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   Widget build(BuildContext context) {
     return SizedBox(
       height: 40,
+      // 父级是松约束（Column 居中排布）时必须明确吃满宽度，否则这一行
+      // 可能被排成内容宽度再居中，症状与负偏移完全一样。
+      width: double.infinity,
       child: NotificationListener<ScrollNotification>(
         onNotification: (notification) {
           // 滚动过程中每帧都排帧尾回调会让 pumpAndSettle / 真实渲染

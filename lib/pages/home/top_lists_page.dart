@@ -197,12 +197,9 @@ class _TopListsPageState extends ConsumerState<TopListsPage>
     _loadBoards(s);
     final ctx = _chipKeys[s.id]?.currentContext;
     if (ctx != null) {
-      Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.fastLinearToSlowEaseIn,
-        alignment: 0.5,
-      );
+      // 居中滚动走 revealChild：ensureVisible 的居中式子对第 0 项出负目标，
+      // 目标未布局时会整行右移半个视口（线上「平台选择行不左对齐」）。
+      SourceBarScrollViewState.maybeOf(ctx)?.revealChild(ctx);
     }
   }
 

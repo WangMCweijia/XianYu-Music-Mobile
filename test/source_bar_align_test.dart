@@ -180,6 +180,34 @@ void main() {
     );
   });
 
+  testWidgets('硬复位：滚到中途也能一次性回到起点并重建视口', (tester) async {
+    // 用户「滑一下就好」的本质是让位置、绘制缓存、内容补偿三者重来一次。
+    // 硬复位把三条一起归零（含换 key 重建视口），锁住它别再退化。
+    final keys = List.generate(10, (_) => GlobalKey());
+    await tester.pumpWidget(
+      _host(SourceBarScrollView(children: _pills(keys))),
+    );
+    await tester.pump();
+
+    final state = tester.state<SourceBarScrollViewState>(
+      find.byType(SourceBarScrollView),
+    );
+    state.controller.jumpTo(120);
+    await tester.pump();
+    expect(state.controller.offset, 120);
+
+    state.hardResetForTest();
+    await tester.pump();
+    await tester.pump();
+
+    expect(state.controller.offset, 0.0, reason: '硬复位必须把位置归零');
+    expect(
+      tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
+      closeTo(14.0, 0.5),
+      reason: '重建视口后第一颗胶囊要回到左内边距',
+    );
+  });
+
   testWidgets('松约束父级（Column 居中排布）下这一行必须吃满宽度', (tester) async {
     final keys = List.generate(6, (_) => GlobalKey());
     await tester.pumpWidget(

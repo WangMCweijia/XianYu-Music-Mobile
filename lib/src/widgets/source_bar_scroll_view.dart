@@ -400,7 +400,8 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   void _hardReset(String why) {
     if (!mounted) return;
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastResetMs < 400) return; // 连续转场时防抖
+    // 连续转场时防抖；测试入口直接放行，不受前一次复位的时间影响
+    if (why != 'test' && now - _lastResetMs < 400) return;
     _lastResetMs = now;
     if (_controller.hasClients && _controller.position.pixels != 0) {
       try {
@@ -621,6 +622,10 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 仅供布局回归测试直接驱动兜底，避免依赖弹性动画的时序。
   @visibleForTesting
   void clampToStart() => _clampToStart();
+
+  /// 仅供布局回归测试直接驱动硬复位。
+  @visibleForTesting
+  void hardResetForTest() => _hardReset('test');
 
   /// 把某个子项居中滚到可见。
   ///

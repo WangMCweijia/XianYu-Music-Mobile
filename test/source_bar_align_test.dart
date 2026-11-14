@@ -5,10 +5,10 @@ import 'package:xianyu_music_mobile/src/widgets/source_bar_scroll_view.dart';
 
 /// 平台选择行左对齐回归。
 ///
-/// 线上现场：搜索结果页「平台选择」这一行左侧空出一大段，第一颗胶囊
-/// 落在屏幕中间、右侧胶囊被裁。原因是横向弹性滚动允许位置停在负值，
-/// 整行内容被整体推到右边。这里锁住三件事：第一颗胶囊贴左内边距、
-/// 负滚动位置会被回正、切平台自动居中时滚动位置不越界。
+/// 线上现场（2.0.7 ~ 2.0.15）：搜索结果页「平台选择」这一行左侧空出半屏，
+/// 第一颗胶囊落在屏幕中间、右侧胶囊被裁，随手滑一下就归位。根因是滚动位置
+/// 可以被本文件之外的代码写成负值。2.0.16 起这一行不再使用任何滚动组件，
+/// 位置只由自己维护并在绘制处钳一次，这里锁住下面几条不变式。
 Widget _host(Widget bar) {
   return MaterialApp(
     home: Scaffold(
@@ -37,98 +37,61 @@ List<Widget> _pills(List<GlobalKey> keys) {
 double _barLeft(WidgetTester tester) =>
     tester.getTopLeft(find.byType(SourceBarScrollView)).dx;
 
+double _firstPillLeft(WidgetTester tester, GlobalKey key) =>
+    tester.getTopLeft(find.byKey(key)).dx - _barLeft(tester);
+
+SourceBarScrollViewState _state(WidgetTester tester) =>
+    tester.state<SourceBarScrollViewState>(find.byType(SourceBarScrollView));
+
 void main() {
-  testWidgets('平台选择行左对齐：第一颗胶囊贴左内边距，负偏移可回正',
-      (tester) async {
+  testWidgets('首帧：第一颗胶囊贴左内边距', (tester) async {
     final keys = List.generate(10, (_) => GlobalKey());
     await tester.pumpWidget(
       _host(SourceBarScrollView(children: _pills(keys))),
     );
     await tester.pump();
-    expect(
-      tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
-      closeTo(14.0, 0.5),
-    );
-
-    // 模拟残留的负滚动位置（弹性 overscroll 的回弹被打断 / PageStorage 读回）
-    final state = tester.state<SourceBarScrollViewState>(
-      find.byType(SourceBarScrollView),
-    );
-    state.controller.jumpTo(-200);
-    await tester.pump();
-    expect(
-      state.controller.offset,
-      0.0,
-      reason: '负偏移必须立刻回正，不能停留在越界位置等下一次滚动结束',
-    );
-    expect(
-      tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
-      closeTo(14.0, 0.5),
-      reason: '负滚动位置没有被回正，第一颗胶囊没有贴左',
-    );
-
-    // 兜底入口保留且幂等
-    state.clampToStart();
-    await tester.pump();
-    expect(state.controller.offset, 0.0);
+    expect(_firstPillLeft(tester, keys[0]), closeTo(14.0, 0.5));
+    expect(_state(tester).offset, 0.0);
   });
 
-  testWidgets('切平台居中滚动不越界、不把整行推到右侧', (tester) async {
+  // 老版本这里能写进负值：整行内容被推到右半边，用户滑一下才被物理钳回。
+  testWidgets('负位置写不进去：钳成 0，第一颗仍在左内边距', (tester) async {
     final keys = List.generate(10, (_) => GlobalKey());
     await tester.pumpWidget(
       _host(SourceBarScrollView(children: _pills(keys))),
     );
     await tester.pump();
 
-    // duration 默认 0，直接 jumpTo，不引入动画等待
-    await Scrollable.ensureVisible(
-      keys[2].currentContext!,
-      alignment: 0.5,
-    );
+    final state = _state(tester);
+    state.jumpToForTest(-200);
     await tester.pump();
 
-    final state = tester.state<SourceBarScrollViewState>(
-      find.byType(SourceBarScrollView),
-    );
-    expect(state.controller.offset, greaterThanOrEqualTo(0.0));
+    expect(state.offset, 0.0, reason: '写入入口必须把负值钳成 0');
     expect(
-      state.controller.offset,
-      lessThanOrEqualTo(state.controller.position.maxScrollExtent),
+      _firstPillLeft(tester, keys[0]),
+      closeTo(14.0, 0.5),
+      reason: '负位置一旦落到绘制上，第一颗胶囊就会被推到屏幕中间',
     );
-    final double selectedX =
-        tester.getTopLeft(find.byKey(keys[2])).dx - _barLeft(tester);
-    expect(selectedX, greaterThanOrEqualTo(0.0));
-    expect(selectedX, lessThan(460.0));
+    expect(tester.takeException(), isNull);
   });
 
-  // 线上复现（2026-11-13，2.0.7 正式版）：第一颗胶囊落在屏幕中央、左侧
-  // 空出约半个屏宽、右侧胶囊被裁。数值吻合「居中目标算成 L - 视口宽/2」，
-  // 即 ensureVisible(alignment:0.5) 拿到一个还没完成布局（宽 0）的目标。
-  testWidgets('revealChild：第 0 项居中必须钳到 0，不能把整行推到右半边',
-      (tester) async {
+  testWidgets('revealChild：第 0 项居中必须钳到 0', (tester) async {
     final keys = List.generate(10, (_) => GlobalKey());
     await tester.pumpWidget(
       _host(SourceBarScrollView(children: _pills(keys))),
     );
     await tester.pump();
 
-    final state = tester.state<SourceBarScrollViewState>(
-      find.byType(SourceBarScrollView),
-    );
-    // 第 0 项居中：内容坐标 14 - (460 - 90) / 2 = -171，必须钳成 0
-    state.revealChild(keys[0].currentContext!, duration: Duration.zero);
+    // 居中式子：内容坐标 14 - (460 - 90) / 2 = -171，必须钳成 0
+    _state(tester).revealChild(keys[0].currentContext!,
+        duration: Duration.zero);
     await tester.pump();
 
-    expect(state.controller.offset, 0.0,
-        reason: '第 0 项居中会算出负目标，必须钳成 0');
-    expect(
-      tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
-      closeTo(14.0, 0.5),
-      reason: '负目标没有被钳住，第一颗胶囊没贴左',
-    );
+    expect(_state(tester).offset, 0.0);
+    expect(_firstPillLeft(tester, keys[0]), closeTo(14.0, 0.5));
   });
 
-  testWidgets('revealChild：目标尺寸为 0 时放弃滚动，不产生负偏移', (tester) async {
+  testWidgets('revealChild：目标尺寸为 0 时放弃，位置不动', (tester) async {
     final keys = List.generate(4, (_) => GlobalKey());
     final zeroKey = GlobalKey();
     await tester.pumpWidget(
@@ -139,22 +102,18 @@ void main() {
     );
     await tester.pump();
 
-    final state = tester.state<SourceBarScrollViewState>(
-      find.byType(SourceBarScrollView),
-    );
-    state.revealChild(zeroKey.currentContext!, duration: Duration.zero);
+    _state(tester).revealChild(zeroKey.currentContext!, duration: Duration.zero);
     await tester.pump();
 
-    expect(state.controller.offset, 0.0,
+    expect(_state(tester).offset, 0.0,
         reason: '宽 0 的目标会退化成「坐标 - 视口/2」，必须直接放弃');
   });
 
-  testWidgets('框架 ensureVisible(alignment:0.5) 打在零宽目标上也写不进负偏移',
-      (tester) async {
-    // 2.0.13 现场核算：胶囊行右移 197.7dp ≈ 视口宽/2，正好是
-    // getOffsetToReveal(alignment: 0.5) 在目标宽 0 时的取值。这条负值由
-    // forcePixels 直接写入、不通知监听者，用户滑动才被物理钳回 —— 所以
-    // 位置层必须自己拒绝，而不是靠谁去监听。
+  // 2.0.13 现场核算：胶囊行右移 197.7dp ≈ 视口宽/2，正是
+  // getOffsetToReveal(alignment: 0.5) 打在宽 0 目标上的取值。这条负值由
+  // forcePixels 直接写进滚动位置、不通知监听者，用户滑动才被物理钳回。
+  // 2.0.16 这一行不再是 Scrollable，框架的居中请求无处可写。
+  testWidgets('框架 ensureVisible(alignment:0.5) 无法再推动这一行', (tester) async {
     final keys = List.generate(10, (_) => GlobalKey());
     final zeroKey = GlobalKey();
     await tester.pumpWidget(
@@ -165,47 +124,61 @@ void main() {
     );
     await tester.pump();
 
-    final state = tester.state<SourceBarScrollViewState>(
-      find.byType(SourceBarScrollView),
-    );
     await Scrollable.ensureVisible(zeroKey.currentContext!, alignment: 0.5);
     await tester.pump();
 
-    expect(state.controller.offset, 0.0,
-        reason: '居中目标算成 14 - 视口/2 的负值，位置层必须拦住');
-    expect(
-      tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
-      closeTo(14.0, 0.5),
-      reason: '负偏移被写进去就会把整行内容推到右半边',
-    );
+    expect(_state(tester).offset, 0.0);
+    expect(_firstPillLeft(tester, keys[0]), closeTo(14.0, 0.5));
   });
 
-  testWidgets('硬复位：滚到中途也能一次性回到起点并重建视口', (tester) async {
-    // 用户「滑一下就好」的本质是让位置、绘制缓存、内容补偿三者重来一次。
-    // 硬复位把三条一起归零（含换 key 重建视口），锁住它别再退化。
+  testWidgets('拖动越界被钳住：左拖到底不超 max，右拖过头回 0', (tester) async {
     final keys = List.generate(10, (_) => GlobalKey());
     await tester.pumpWidget(
       _host(SourceBarScrollView(children: _pills(keys))),
     );
     await tester.pump();
 
-    final state = tester.state<SourceBarScrollViewState>(
+    // 内容 10 * 98 + 28 = 1008，视口 460，可滚 548
+    await tester.drag(
       find.byType(SourceBarScrollView),
+      const Offset(-5000, 0),
     );
-    state.controller.jumpTo(120);
-    await tester.pump();
-    expect(state.controller.offset, 120);
+    await tester.pumpAndSettle();
 
-    state.hardResetForTest();
-    await tester.pump();
-    await tester.pump();
-
-    expect(state.controller.offset, 0.0, reason: '硬复位必须把位置归零');
+    final state = _state(tester);
+    expect(state.offset, greaterThan(0.0));
+    expect(state.offset, lessThanOrEqualTo(548.0 + 0.5),
+        reason: '不能滚出内容边界');
     expect(
       tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
-      closeTo(14.0, 0.5),
-      reason: '重建视口后第一颗胶囊要回到左内边距',
+      lessThan(20.0),
     );
+
+    // 往右猛拖，越过起点
+    await tester.drag(
+      find.byType(SourceBarScrollView),
+      const Offset(8000, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(state.offset, 0.0, reason: '越过起点必须钳回 0，不能留负值');
+    expect(_firstPillLeft(tester, keys[0]), closeTo(14.0, 0.5));
+  });
+
+  testWidgets('内容比视口窄时不能滚动', (tester) async {
+    final keys = List.generate(2, (_) => GlobalKey());
+    await tester.pumpWidget(
+      _host(SourceBarScrollView(children: _pills(keys))),
+    );
+    await tester.pump();
+
+    await tester.drag(
+      find.byType(SourceBarScrollView),
+      const Offset(-400, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(_state(tester).offset, 0.0);
+    expect(_firstPillLeft(tester, keys[0]), closeTo(14.0, 0.5));
   });
 
   testWidgets('松约束父级（Column 居中排布）下这一行必须吃满宽度', (tester) async {

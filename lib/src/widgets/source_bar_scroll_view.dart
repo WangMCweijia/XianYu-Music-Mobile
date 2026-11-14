@@ -66,7 +66,12 @@ import '../core/application_logger.dart';
 /// 连"3. 尺寸变化后重算"也堵不干净，因为位置是**别人直接写的**。所以
 /// 10. 位置层硬钳位 —— 见 [_StartClampedPosition]：`setPixels` /
 ///     `forcePixels` / `correctPixels` 三条写入路径全部拦一遍，负值一律
-///     落成 0。无论谁写、什么时候写，都进不去。
+///     落成 0。无论谁写、什么时候写，都进不去（位置被替换时走 `absorb`，
+///     那条也补了）。
+/// 11. 常驻看门狗 —— 上面十条都要"有帧"才跑，而现场恰恰是坐标被冻住后
+///     页面不再产生帧（2.0.13 日志里 `st` 连续 8 次采样都是同一个值）。
+///     定时器不看渲染管线脸色，300ms 内必核对并纠正一次；判定"定型"用
+///     墙钟 250ms，动画期每帧都在变，天然不会被误判。
 class SourceBarScrollView extends StatefulWidget {
   const SourceBarScrollView({
     super.key,
@@ -124,8 +129,17 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 判定异常时写日志"的观测方式是失效的（判定没命中，等于黑屏）。这里
   /// 改成无条件采样，下一次复现直接把"看到错位那一刻的读数"交出来：
   /// 若 `off=-198` 则坐实滚动位置；若 `p1=14` 而肉眼在 212，则是绘制层。
-  Timer? _probeTimer;
-  int _probeTicks = 0;
+  /// 常驻看门狗：不依赖任何帧/通知，每 300ms 量一次几何。
+  ///
+  /// 前面所有兜底（帧链、滚动通知、帧末自检）都要"有帧"才会跑，而现场恰恰
+  /// 是**坐标被冻住之后页面不再产生帧**：2.0.13 的日志里 `st=25` 连续 8 次
+  /// 采样都是同一个值，说明 `_healGeometry` 早就停了，屏幕上的错位就一直
+  /// 停在那里。定时器不看渲染管线脸色，300ms 内必被纠正一次。
+  Timer? _watchdog;
+
+  /// 上一次写日志时的几何签名与时间（变化驱动 + 5s 心跳）。
+  String _lastSig = '';
+  int _lastProbeAt = 0;
 
   /// 第一颗胶囊的 key：量它的**屏幕坐标**（用户眼睛看到的"左边第一颗"）。
   final GlobalKey _firstChildKey = GlobalKey();
@@ -166,6 +180,13 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   double? _lastGx;
   int _sameGx = 0;
 
+  /// 上一次 `gx` 发生变化的**墙钟**时刻。
+  ///
+  /// 判"坐标定型"只能靠时间：转场/滚动动画每帧都在改坐标，逐帧采样必然
+  /// 不重复；而真正出问题的现场是"坐标被冻住"，几秒内一动不动。要求读数
+  /// 稳定 ≥250ms 才动手，两种情形天然分开。
+  int _lastGxChangeMs = 0;
+
   /// 路由入场动画：转场结束是"布局稳了"的信号，用来起一段自愈 + 主动重绘。
   Animation<double>? _routeAnim;
 
@@ -197,26 +218,41 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     _controller.addListener(_onOffsetChanged);
     // 首屏帧链：页面静止后没有帧，帧末自检也不会被调用，得自己请帧。
     _scheduleHeal(24);
-    _startProbe();
+    _startWatchdog();
   }
 
-  /// 无条件采样一段时间（约 10s，每 300ms 一条）。
+  /// 常驻看门狗 + 变化驱动采样。
   ///
-  /// 冷启动进搜索结果页、插件加载完成、平台列表从 1 个变成 N 个都发生在
-  /// 这几秒内，正是错位出现的窗口。
-  void _startProbe({int ticks = 34}) {
+  /// 2.0.13 的采样只有 10s 窗口、且第 10s 之后不再纠正；真机上"装包→冷启动→
+  /// 搜索→看到错位→导出日志"往往超过这个窗口，于是三次导出的日志**没有一次
+  /// 抓到现场**。这里改成整个页面生命周期常驻：
+  /// - 每 300ms 先纠正（`_clampToStart` + `_healGeometry`），错位最多停留 300ms；
+  /// - 几何**有变化**才写一条，静止时 5s 一条心跳，日志量不会挤掉别的模块。
+  ///
+  /// 只在非 debug 构建启用：widget 测试跑在 debug 下，遗留 Timer 会让测试
+  /// 以"Timer is still pending"失败（2.0.9 踩过一次）。
+  void _startWatchdog() {
     if (!_diag) return;
-    _probeTimer?.cancel();
-    _probeTicks = ticks;
-    _probeTimer = Timer.periodic(const Duration(milliseconds: 300), (t) {
-      if (!mounted || _probeTicks <= 0) {
-        t.cancel();
-        return;
-      }
-      _probeTicks--;
+    _watchdog?.cancel();
+    _watchdog = Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (!mounted) return;
+      _clampToStart();
+      _healGeometry();
       final box = _rowKey.currentContext?.findRenderObject() as RenderBox?;
       if (box == null || !box.hasSize) return;
-      AppLog.info('srcbar', '[srcbar] probe ${_geoLine(box)}');
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final pos = _controller.hasClients ? _controller.position : null;
+      final gx = box.localToGlobal(Offset.zero).dx;
+      final sig = '${gx.round()}/${(pos?.pixels ?? 0).round()}/'
+          '${_contentShift.round()}/${_visualShift.round()}';
+      final changed = sig != _lastSig;
+      if (!changed && now - _lastProbeAt < 5000) return;
+      _lastSig = sig;
+      _lastProbeAt = now;
+      AppLog.info(
+        'srcbar',
+        '[srcbar] probe${changed ? " *" : ""} ${_geoLine(box)}',
+      );
     });
   }
 
@@ -249,8 +285,9 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
         oldWidget.floating != widget.floating) {
       _scheduleHeal(20);
       _forceRepaintSoon();
-      // 平台列表刚变过，重新采一段：错位就在这一刻被画出来
-      _startProbe();
+      // 平台列表刚变过：错位就在这一刻被画出来，让采样立刻吐一条
+      _lastSig = '';
+      _lastProbeAt = 0;
     }
   }
 
@@ -344,13 +381,20 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
 
     // 一、整行位置：先判"坐标定型"，再决定修不修。
     //
-    // 分段采样的理由见 [_lastGx]：`animation.isCompleted` 在真实路由上会
-    // 长期为 false，用它当闸门等于把兜底永久关掉。
+    // 判据是**墙钟时间**，不是帧数也不是 `ModalRoute.animation.isCompleted`
+    // （后者在真实路由上会长期为 false，2.0.11 因此一次都没修过）：
+    // 动画每帧都在改坐标，稳定不了 250ms；被冻住的错位一动不动，必然超时。
     final gx = box.localToGlobal(Offset.zero).dx;
-    final prev = _lastGx;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (_lastGx == null || (gx - _lastGx!).abs() >= 0.5) {
+      _lastGx = gx;
+      _sameGx = 0;
+      _lastGxChangeMs = nowMs;
+      return; // 刚变过，这一帧不判
+    }
     _lastGx = gx;
-    _sameGx = (prev != null && (gx - prev).abs() < 0.5) ? _sameGx + 1 : 0;
-    final settled = _sameGx >= 2;
+    _sameGx++;
+    final settled = _sameGx >= 2 && nowMs - _lastGxChangeMs >= 250;
 
     if (gx.abs() <= 0.5) {
       _rowHealTries = 0; // 已回正：重新武装，下次跑偏还能修
@@ -406,7 +450,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
 
   @override
   void dispose() {
-    _probeTimer?.cancel();
+    _watchdog?.cancel();
     _routeAnim?.removeStatusListener(_onRouteStatus);
     _controller.removeListener(_onOffsetChanged);
     _controller.dispose();
@@ -481,15 +525,17 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     final probe = probeBox is RenderBox && probeBox.hasSize
         ? probeBox.localToGlobal(Offset.zero, ancestor: box).dx
         : _padding;
-    // 第一颗胶囊的屏幕坐标：眼睛看到的位置就是它。与 gx / dx0 三者互相
-    // 独立——gx 管整行、dx0 管内容起点、p1 管真实像素落点。
-    final firstBox = _firstChildKey.currentContext?.findRenderObject();
-    final p1 = firstBox is RenderBox && firstBox.hasSize
-        ? firstBox.localToGlobal(Offset.zero).dx
-        : double.nan;
+    // 第一颗胶囊的屏幕坐标 = 整行左缘 + 内容起点。不再单独拿 GlobalKey 去
+    // 量：2.0.13 的日志里它恒为 NaN（KeyedSubtree 上挂 GlobalKey 量不到
+    // RenderBox），而 gx + dx0 是同一件事的两个分量，直接相加更可靠。
+    final gx = box.localToGlobal(Offset.zero).dx;
+    final p1 = gx + probe;
+    final anim = ModalRoute.of(context)?.animation;
     return 'id=$_id '
-        'gx=${box.localToGlobal(Offset.zero).dx.toStringAsFixed(1)} '
+        'gx=${gx.toStringAsFixed(1)} '
         'p1=${p1.toStringAsFixed(1)} '
+        'a=${(anim?.value ?? -1).toStringAsFixed(2)}/'
+        '${anim == null ? "-" : anim.status.name} '
         'off=${(pos?.pixels ?? 0).toStringAsFixed(1)} '
         'vw=${(pos?.viewportDimension ?? 0).toStringAsFixed(1)} '
         'w=${box.size.width.toStringAsFixed(1)} '
@@ -722,6 +768,17 @@ class _StartClampedPosition extends ScrollPositionWithSingleContext {
     if (value >= 0) return value;
     onClamp(value);
     return 0;
+  }
+
+  /// 第四条来路：位置被**替换**时框架把旧 `_pixels` 直接搬过来。
+  ///
+  /// `Scrollable` 在物理参数/控制器变化时会用 `oldPosition` 造一个新位置，
+  /// 构造函数里 `absorb()` 是一句 `_pixels = other._pixels`，不经过上面三个
+  /// 方法，所以也要在这里兜一道——否则旧位置里的负值会原样跟着搬家。
+  @override
+  void absorb(ScrollPosition other) {
+    super.absorb(other);
+    if (_pixels < 0) super.correctPixels(0);
   }
 
   @override

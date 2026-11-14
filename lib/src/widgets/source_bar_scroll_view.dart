@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../core/application_logger.dart';
@@ -49,6 +51,21 @@ import '../core/application_logger.dart';
 /// 9. 主动重绘 —— 转场结束、平台列表变化后，替用户"滑那一下"（见
 ///    [_forceRepaint]）：几何全对却偏、滑动才恢复，只能是上一次绘制的像素
 ///    被复用。
+///
+/// 2.0.13 又拿到一张能定量核算的截图（1272×2800，逻辑宽 403.8dp，屏宽
+/// 424dp）：三颗胶囊的左缘分别在 635 / 916 / 1196 px，换算 211.7 / 305 /
+/// 399dp —— 内容起点比应有的 14dp 右移了 **197.7dp ≈ 视口宽 / 2**。
+/// 这个数不是巧合：`getOffsetToReveal(alignment: 0.5)` 在**目标宽度为 0**
+/// 时给出的就是 `目标坐标 - 视口宽 / 2`。而这类负值经 `forcePixels` /
+/// `correctPixels` 直接写进 `_pixels`，**不 notifyListeners**，前面所有
+/// "监听 controller / 滚动通知"的兜底都等不到它；用户手指一碰，
+/// `ClampingScrollPhysics.applyBoundaryConditions` 立刻把位置钳回 0 ——
+/// 正是"滑动一下就归位"。
+///
+/// 连"3. 尺寸变化后重算"也堵不干净，因为位置是**别人直接写的**。所以
+/// 10. 位置层硬钳位 —— 见 [_StartClampedPosition]：`setPixels` /
+///     `forcePixels` / `correctPixels` 三条写入路径全部拦一遍，负值一律
+///     落成 0。无论谁写、什么时候写，都进不去。
 class SourceBarScrollView extends StatefulWidget {
   const SourceBarScrollView({
     super.key,
@@ -66,9 +83,21 @@ class SourceBarScrollView extends StatefulWidget {
 }
 
 class SourceBarScrollViewState extends State<SourceBarScrollView> {
-  /// keepScrollOffset: false —— 越界位置不允许被 PageStorage 记住再读回。
-  final ScrollController _controller = ScrollController(
-    keepScrollOffset: false,
+  /// 位置层硬钳位：任何来源都不允许把滚动位置设成负数。
+  ///
+  /// 现场核算（截图像素 + 真机日志）：错位时第一颗胶囊起点 ≈ 211.7dp，正常
+  /// 应为 14dp，差值 ≈ 197.7dp ≈ 视口宽 / 2 —— 正是
+  /// `getOffsetToReveal(alignment: 0.5)` 在**目标宽度为 0** 时给出的
+  /// `目标坐标 - 视口宽 / 2`。这个负值经 `forcePixels` / `correctPixels`
+  /// 直接写进 `_pixels`，**不会 notifyListeners**，所以前几版挂在 controller
+  /// 监听、滚动通知上的兜底全都等不到它；而用户手指一碰，
+  /// ClampingScrollPhysics 的 `applyBoundaryConditions` 立刻把位置钳回 0
+  /// —— 这就是"滑动一下就归位"。
+  ///
+  /// 与其继续猜是谁写的，不如让位置本身拒绝负值（见 [_StartClampedPosition]）：
+  /// 无论来路、无论时机，越界即归零。
+  late final ScrollController _controller = _StartClampedController(
+    onClamp: _onForcedNegative,
   );
 
   bool _clampScheduled = false;
@@ -78,6 +107,27 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
 
   /// 异常日志节流，避免尺寸反复变化时刷屏。
   int _lastWarnAt = 0;
+
+  /// 位置层钳位命中次数与日志节流（布局期可能连续命中，别刷屏）。
+  int _clampHits = 0;
+  int _lastClampLogAt = 0;
+
+  /// 诊断埋点只在发布构建里跑：widget 测试跑在 debug 下，而 AppLog 的
+  /// 800ms 落盘防抖会留下未完成定时器、让测试失败（2.0.9 踩过一次）。
+  bool get _diag => !kDebugMode;
+
+  /// 无条件采样：进页面后连续记录一段时间几何快照，并额外记录"第一颗
+  /// 胶囊的屏幕坐标"。
+  ///
+  /// 2.0.12 的日志里一条 `[srcbar]` 都没有，而现场确实错位——说明"只在
+  /// 判定异常时写日志"的观测方式是失效的（判定没命中，等于黑屏）。这里
+  /// 改成无条件采样，下一次复现直接把"看到错位那一刻的读数"交出来：
+  /// 若 `off=-198` 则坐实滚动位置；若 `p1=14` 而肉眼在 212，则是绘制层。
+  Timer? _probeTimer;
+  int _probeTicks = 0;
+
+  /// 第一颗胶囊的 key：量它的**屏幕坐标**（用户眼睛看到的"左边第一颗"）。
+  final GlobalKey _firstChildKey = GlobalKey();
 
   /// 整行被父级排歪时的绘制补偿（把这一行画回屏幕左缘）。
   ///
@@ -146,6 +196,44 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     _controller.addListener(_onOffsetChanged);
     // 首屏帧链：页面静止后没有帧，帧末自检也不会被调用，得自己请帧。
     _scheduleHeal(24);
+    _startProbe();
+  }
+
+  /// 无条件采样一段时间（约 10s，每 300ms 一条）。
+  ///
+  /// 冷启动进搜索结果页、插件加载完成、平台列表从 1 个变成 N 个都发生在
+  /// 这几秒内，正是错位出现的窗口。
+  void _startProbe({int ticks = 34}) {
+    if (!_diag) return;
+    _probeTimer?.cancel();
+    _probeTicks = ticks;
+    _probeTimer = Timer.periodic(const Duration(milliseconds: 300), (t) {
+      if (!mounted || _probeTicks <= 0) {
+        t.cancel();
+        return;
+      }
+      _probeTicks--;
+      final box = _rowKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return;
+      AppLog.info('srcbar', '[srcbar] probe ${_geoLine(box)}');
+    });
+  }
+
+  /// 位置层拦下一次负值。
+  ///
+  /// 这条日志如果出现，等于直接指认"错位来自滚动位置"，连值都给了
+  /// （`value=-197.7` 这种就是半屏）；不再出现则说明是绘制层。
+  void _onForcedNegative(double value) {
+    _clampHits++;
+    if (!_diag) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastClampLogAt < 500) return;
+    _lastClampLogAt = now;
+    AppLog.warn(
+      'srcbar',
+      '[srcbar] clamp id=$_id 拦截 value=${value.toStringAsFixed(1)} '
+      'hits=$_clampHits',
+    );
   }
 
   @override
@@ -160,6 +248,8 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
         oldWidget.floating != widget.floating) {
       _scheduleHeal(20);
       _forceRepaintSoon();
+      // 平台列表刚变过，重新采一段：错位就在这一刻被画出来
+      _startProbe();
     }
   }
 
@@ -315,6 +405,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
 
   @override
   void dispose() {
+    _probeTimer?.cancel();
     _routeAnim?.removeStatusListener(_onRouteStatus);
     _controller.removeListener(_onOffsetChanged);
     _controller.dispose();
@@ -389,8 +480,15 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     final probe = probeBox is RenderBox && probeBox.hasSize
         ? probeBox.localToGlobal(Offset.zero, ancestor: box).dx
         : _padding;
+    // 第一颗胶囊的屏幕坐标：眼睛看到的位置就是它。与 gx / dx0 三者互相
+    // 独立——gx 管整行、dx0 管内容起点、p1 管真实像素落点。
+    final firstBox = _firstChildKey.currentContext?.findRenderObject();
+    final p1 = firstBox is RenderBox && firstBox.hasSize
+        ? firstBox.localToGlobal(Offset.zero).dx
+        : double.nan;
     return 'id=$_id '
         'gx=${box.localToGlobal(Offset.zero).dx.toStringAsFixed(1)} '
+        'p1=${p1.toStringAsFixed(1)} '
         'off=${(pos?.pixels ?? 0).toStringAsFixed(1)} '
         'vw=${(pos?.viewportDimension ?? 0).toStringAsFixed(1)} '
         'w=${box.size.width.toStringAsFixed(1)} '
@@ -498,6 +596,13 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
           return false;
         },
         child: ListView(
+          // key 随平台数量变化：视口连同滚动位置整体重建。
+          //
+          // 冷启动的错位正是"平台列表从 1 个变成 N 个"之后第一眼看到的，
+          // 旧视口沿用旧内容宽度算出的位置会留在 `_pixels` 里；换 key 等于
+          // 换一个全新的 viewport（offset 归 0，图层也是新的），顺手把
+          // 残留位置和可能被复用的旧 raster 一起作废。
+          key: ValueKey('srcbar-${widget.floating}-${widget.children.length}'),
           controller: _controller,
           scrollDirection: Axis.horizontal,
           physics: const ClampingScrollPhysics(),
@@ -505,7 +610,12 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
           children: [
             // 零尺寸哨兵：只用于量内容起点，不占位、不参与命中测试
             SizedBox(key: _contentStartKey, width: 0, height: 0),
-            ...widget.children,
+            if (widget.children.isNotEmpty)
+              KeyedSubtree(
+                key: _firstChildKey,
+                child: widget.children.first,
+              ),
+            ...widget.children.skip(1),
           ],
         ),
       ),
@@ -557,4 +667,68 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
       ),
     );
   }
+}
+
+/// 只做一件事的控制器：把 [createScrollPosition] 换成
+/// [_StartClampedPosition]，并把被拦下的原始值回传（诊断用）。
+class _StartClampedController extends ScrollController {
+  _StartClampedController({required this.onClamp})
+      : super(keepScrollOffset: false);
+
+  final ValueChanged<double> onClamp;
+
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) {
+    return _StartClampedPosition(
+      physics: physics,
+      context: context,
+      initialPixels: initialScrollOffset,
+      keepScrollOffset: keepScrollOffset,
+      oldPosition: oldPosition,
+      debugLabel: debugLabel,
+      onClamp: onClamp,
+    );
+  }
+}
+
+/// 拒绝负滚动位置的 `ScrollPosition`。
+///
+/// `ScrollPosition` 里能写 `_pixels` 的只有三条路：`setPixels`（滚动 / 弹道）、
+/// `forcePixels`（`jumpTo` / `animateTo` 收尾）、`correctPixels`（布局期校正）。
+/// 三条全部钳一道，于是**任何来源、任何时机**都写不进负值——不再依赖"谁在
+/// 什么时候通知我"，也就不会出现"兜底逻辑写好了但永远不被触发"。
+///
+/// 只在起点一侧拦（`value < 0`）：横向 ListView 的 `minScrollExtent` 恒为 0，
+/// 左内边距已算在内容里；终点一侧不动，滚动到底的正常逻辑不受影响。
+class _StartClampedPosition extends ScrollPositionWithSingleContext {
+  _StartClampedPosition({
+    required super.physics,
+    required super.context,
+    super.initialPixels,
+    super.keepScrollOffset,
+    super.oldPosition,
+    super.debugLabel,
+    required this.onClamp,
+  });
+
+  final ValueChanged<double> onClamp;
+
+  double _guard(double value) {
+    if (value >= 0) return value;
+    onClamp(value);
+    return 0;
+  }
+
+  @override
+  void correctPixels(double value) => super.correctPixels(_guard(value));
+
+  @override
+  void forcePixels(double value) => super.forcePixels(_guard(value));
+
+  @override
+  void setPixels(double newPixels) => super.setPixels(_guard(newPixels));
 }

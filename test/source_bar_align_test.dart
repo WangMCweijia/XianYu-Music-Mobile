@@ -149,6 +149,37 @@ void main() {
         reason: '宽 0 的目标会退化成「坐标 - 视口/2」，必须直接放弃');
   });
 
+  testWidgets('框架 ensureVisible(alignment:0.5) 打在零宽目标上也写不进负偏移',
+      (tester) async {
+    // 2.0.13 现场核算：胶囊行右移 197.7dp ≈ 视口宽/2，正好是
+    // getOffsetToReveal(alignment: 0.5) 在目标宽 0 时的取值。这条负值由
+    // forcePixels 直接写入、不通知监听者，用户滑动才被物理钳回 —— 所以
+    // 位置层必须自己拒绝，而不是靠谁去监听。
+    final keys = List.generate(10, (_) => GlobalKey());
+    final zeroKey = GlobalKey();
+    await tester.pumpWidget(
+      _host(SourceBarScrollView(children: [
+        SizedBox(key: zeroKey, width: 0, height: 40),
+        ..._pills(keys),
+      ])),
+    );
+    await tester.pump();
+
+    final state = tester.state<SourceBarScrollViewState>(
+      find.byType(SourceBarScrollView),
+    );
+    await Scrollable.ensureVisible(zeroKey.currentContext!, alignment: 0.5);
+    await tester.pump();
+
+    expect(state.controller.offset, 0.0,
+        reason: '居中目标算成 14 - 视口/2 的负值，位置层必须拦住');
+    expect(
+      tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
+      closeTo(14.0, 0.5),
+      reason: '负偏移被写进去就会把整行内容推到右半边',
+    );
+  });
+
   testWidgets('松约束父级（Column 居中排布）下这一行必须吃满宽度', (tester) async {
     final keys = List.generate(6, (_) => GlobalKey());
     await tester.pumpWidget(

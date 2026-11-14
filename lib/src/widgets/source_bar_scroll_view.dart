@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
+import 'package:flutter/rendering.dart';
 
 import '../core/application_logger.dart';
 import '../core/diag_box.dart';
@@ -251,7 +252,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView>
                   maxWidth: double.infinity,
                   child: ValueListenableBuilder<double>(
                     valueListenable: _offset,
-                    builder: (context, _, __) => Transform.translate(
+                    builder: (context, _, _) => Transform.translate(
                       // 位置只可能让内容往左走；向右偏移的图在这条链上不存在。
                       offset: Offset(-_paintOffset, 0),
                       child: Row(

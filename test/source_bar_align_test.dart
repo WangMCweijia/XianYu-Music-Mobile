@@ -100,4 +100,84 @@ void main() {
     expect(selectedX, greaterThanOrEqualTo(0.0));
     expect(selectedX, lessThan(460.0));
   });
+
+  // 线上复现（2026-11-13，2.0.7 正式版）：第一颗胶囊落在屏幕中央、左侧
+  // 空出约半个屏宽、右侧胶囊被裁。数值吻合「居中目标算成 L - 视口宽/2」，
+  // 即 ensureVisible(alignment:0.5) 拿到一个还没完成布局（宽 0）的目标。
+  testWidgets('revealChild：第 0 项居中必须钳到 0，不能把整行推到右半边',
+      (tester) async {
+    final keys = List.generate(10, (_) => GlobalKey());
+    await tester.pumpWidget(
+      _host(SourceBarScrollView(children: _pills(keys))),
+    );
+    await tester.pump();
+
+    final state = tester.state<SourceBarScrollViewState>(
+      find.byType(SourceBarScrollView),
+    );
+    // 第 0 项居中：内容坐标 14 - (460 - 90) / 2 = -171，必须钳成 0
+    state.revealChild(keys[0].currentContext!, duration: Duration.zero);
+    await tester.pump();
+
+    expect(state.controller.offset, 0.0,
+        reason: '第 0 项居中会算出负目标，必须钳成 0');
+    expect(
+      tester.getTopLeft(find.byKey(keys[0])).dx - _barLeft(tester),
+      closeTo(14.0, 0.5),
+      reason: '负目标没有被钳住，第一颗胶囊没贴左',
+    );
+  });
+
+  testWidgets('revealChild：目标尺寸为 0 时放弃滚动，不产生负偏移', (tester) async {
+    final keys = List.generate(4, (_) => GlobalKey());
+    final zeroKey = GlobalKey();
+    await tester.pumpWidget(
+      _host(SourceBarScrollView(children: [
+        ..._pills(keys),
+        SizedBox(key: zeroKey, width: 0, height: 40),
+      ])),
+    );
+    await tester.pump();
+
+    final state = tester.state<SourceBarScrollViewState>(
+      find.byType(SourceBarScrollView),
+    );
+    state.revealChild(zeroKey.currentContext!, duration: Duration.zero);
+    await tester.pump();
+
+    expect(state.controller.offset, 0.0,
+        reason: '宽 0 的目标会退化成「坐标 - 视口/2」，必须直接放弃');
+  });
+
+  testWidgets('松约束父级（Column 居中排布）下这一行必须吃满宽度', (tester) async {
+    final keys = List.generate(6, (_) => GlobalKey());
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 424,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 48),
+                SourceBarScrollView(children: _pills(keys)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      tester.getSize(find.byType(SourceBarScrollView)).width,
+      424.0,
+      reason: 'Column 给的是松约束，这一行不能缩成内容宽度',
+    );
+    expect(
+      tester.getTopLeft(find.byKey(keys[0])).dx -
+          tester.getTopLeft(find.byType(SourceBarScrollView)).dx,
+      closeTo(14.0, 0.5),
+    );
+  });
 }

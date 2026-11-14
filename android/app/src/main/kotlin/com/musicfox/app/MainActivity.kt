@@ -17,6 +17,7 @@ import android.graphics.Color
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -60,6 +61,7 @@ class MainActivity : AudioServiceActivity() {
     private val DEVICE_INFO_CHANNEL = "xianyu/device_info"
     private val SYSTEM_UI_CHANNEL = "xianyu/system_ui"
     private val HAPTICS_CHANNEL = "xianyu/haptics"
+    private val APK_INSTALL_CHANNEL = "xianyu/apk_install"
     private val REQ_CHOOSE_TREE = 1001
 
     // 横竖屏旋转事件：旋转一开始系统即回调 onConfigurationChanged，把当前屏幕
@@ -902,6 +904,71 @@ class MainActivity : AudioServiceActivity() {
                             result.success(false)
                         } else {
                             safAsync(result) { MediaStoreWriter.deleteMedia(this, path) }
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        // 自更新安装：Dart 侧把 Release 里的 APK 下到缓存目录，这里以
+        // content:// 交给系统安装器（FileProvider 复用系统分享的 provider，
+        // 其 paths 已含 cache 目录）。Android 8+ 另需用户单独授予「安装未知
+        // 应用」，未授权时不能静默失败，要先跳系统授权页。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APK_INSTALL_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "canInstall" -> result.success(
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                            packageManager.canRequestPackageInstalls()
+                    )
+                    "openInstallSettings" -> {
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                            result.success(true)
+                        } else {
+                            try {
+                                startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                        Uri.parse("package:$packageName")
+                                    )
+                                )
+                                result.success(true)
+                            } catch (e: Exception) {
+                                result.success(false)
+                            }
+                        }
+                    }
+                    "install" -> {
+                        val path = call.argument<String>("path") ?: ""
+                        if (path.isEmpty()) {
+                            result.error("args", "缺 path", null)
+                        } else {
+                            try {
+                                val file = File(path)
+                                if (!file.exists()) {
+                                    result.error("missing", "安装包不存在", null)
+                                } else {
+                                    val uri = FileProvider.getUriForFile(
+                                        this, "$packageName.share_files", file
+                                    )
+                                    startActivity(
+                                        Intent(Intent.ACTION_VIEW).apply {
+                                            setDataAndType(
+                                                uri,
+                                                "application/vnd.android.package-archive"
+                                            )
+                                            addFlags(
+                                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                                    Intent.FLAG_ACTIVITY_NEW_TASK
+                                            )
+                                        }
+                                    )
+                                    result.success(true)
+                                }
+                            } catch (e: Exception) {
+                                result.error(
+                                    "install_failed", e.message ?: "安装失败", null
+                                )
+                            }
                         }
                     }
                     else -> result.notImplemented()

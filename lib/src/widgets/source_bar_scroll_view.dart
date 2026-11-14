@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
 import '../core/application_logger.dart';
@@ -729,6 +730,8 @@ class _StartClampedPosition extends ScrollPositionWithSingleContext {
   @override
   void forcePixels(double value) => super.forcePixels(_guard(value));
 
+  // 签名是 double（ScrollPositionWithSingleContext 为 Activity 回调开了返回值），
+  // 与基类的 void 版本不同，不能写成 void。
   @override
-  void setPixels(double newPixels) => super.setPixels(_guard(newPixels));
+  double setPixels(double newPixels) => super.setPixels(_guard(newPixels));
 }

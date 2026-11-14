@@ -12,6 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../auth/account_api.dart';
 import '../auth/auth_provider.dart' show defaultAuthBaseUrl;
 import '../auth/server_models.dart';
+import '../core/application_logger.dart';
 import '../core/platform_caps.dart';
 import '../core/settings.dart';
 import '../device/device_info.dart';
@@ -20,6 +21,8 @@ import '../widgets/app_toast.dart';
 import '../widgets/press_scale.dart';
 import '../widgets/predictive_dialog_route.dart';
 import '../i18n/i18n.dart';
+import 'apk_installer.dart';
+import 'github_release.dart';
 
 const _lastPromptKey = 'app_update_last_prompt_date';
 
@@ -74,7 +77,90 @@ int compareVersions(String a, String b) {
   return 0;
 }
 
-Future<void> showUpdateDialog(BuildContext context, LatestVersion latest) {
+/// 统一的「发现新版本」描述。
+///
+/// 两个来源共用同一个对话框：
+/// - 公开仓库 Release：带 APK 资产直链，可应用内下载安装；
+/// - 自建服务器接口：只给下载页地址，走浏览器（老链路保留作兜底）。
+class AppUpdateInfo {
+  const AppUpdateInfo({
+    required this.version,
+    this.notes = '',
+    this.apkUrl = '',
+    this.assetName = '',
+    this.sumsUrl = '',
+    this.serverUrl = '',
+  });
+
+  final String version;
+  final String notes;
+
+  /// Release 里的 APK 资产直链；为空表示只能走浏览器下载。
+  final String apkUrl;
+  final String assetName;
+
+  /// SHA256SUMS.txt 直链；为空则跳过校验（不因缺校验和阻断安装）。
+  final String sumsUrl;
+
+  /// 自建服务器下发的下载地址（可能是相对路径）。
+  final String serverUrl;
+
+  bool get canInstallInApp => apkUrl.isNotEmpty;
+}
+
+/// 从公开仓库 Releases 里挑出可用的新版本；无更新返回 null。
+///
+/// 稳定版不提示预发布（内测版才接收 beta），避免把测试包推给普通用户。
+Future<AppUpdateInfo?> fetchGithubUpdateInfo() async {
+  final releases = await fetchGithubReleases();
+  if (releases.isEmpty) return null;
+  final allowPrerelease = isBetaBuild;
+  GithubRelease? best;
+  for (final r in releases) {
+    if (r.prerelease && !allowPrerelease) continue;
+    if (best == null || compareVersions(r.version, best.version) > 0) {
+      best = r;
+    }
+  }
+  if (best == null) return null;
+  if (compareVersions(best.version, appVersion) <= 0) return null;
+  return AppUpdateInfo(
+    version: best.version,
+    notes: best.notes,
+    apkUrl: best.apk?.url ?? '',
+    assetName: best.apk?.name ?? '',
+    sumsUrl: best.sums?.url ?? '',
+  );
+}
+
+/// 更新检查：公开仓库 Release 优先，失败再回落自建服务器接口。
+///
+/// 返回 null 表示已是最新；两条来源都失败时抛出，由调用方决定是否提示。
+Future<AppUpdateInfo?> resolveUpdate(WidgetRef ref) async {
+  Object? githubError;
+  try {
+    final info = await fetchGithubUpdateInfo();
+    if (info != null) return info;
+  } catch (e) {
+    githubError = e;
+    AppLog.warn('update', '[update] GitHub 检查失败：$e');
+  }
+  try {
+    final latest = await ref.read(accountApiProvider).fetchServerUpdate();
+    if (latest != null && hasNewVersion(latest)) {
+      return AppUpdateInfo(
+        version: latest.version,
+        notes: latest.content,
+        serverUrl: latest.downloadUrl,
+      );
+    }
+    return null;
+  } catch (e) {
+    throw githubError ?? e;
+  }
+}
+
+Future<void> showUpdateDialog(BuildContext context, AppUpdateInfo info) {
   return showPredictiveDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -85,13 +171,14 @@ Future<void> showUpdateDialog(BuildContext context, LatestVersion latest) {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(tr('最新版本：{v}', {'v': latest.version}),
+            Text(tr('最新版本：{v}', {'v': info.version}),
                 style: const TextStyle(
                     fontSize: 15, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            if (latest.content.isNotEmpty)
-              Text(latest.content,
+            if (info.notes.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(info.notes,
                   style: const TextStyle(fontSize: 13, height: 1.5)),
+            ],
           ],
         ),
       ),
@@ -103,20 +190,119 @@ Future<void> showUpdateDialog(BuildContext context, LatestVersion latest) {
           child: Text(tr('暂不更新')),
           ),
         ),
-        if (latest.downloadUrl.isNotEmpty)
-          PressableScale(
-            pressScale: 0.92,
-            child: FilledButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await openExternalUrl(ctx, absoluteDownloadUrl(latest.downloadUrl));
-            },
-            child: Text(tr('去下载')),
-            ),
+        PressableScale(
+          pressScale: 0.92,
+          child: FilledButton(
+          onPressed: () async {
+            Navigator.pop(ctx);
+            if (info.canInstallInApp) {
+              await downloadAndInstallUpdate(context, info);
+            } else if (info.serverUrl.isNotEmpty) {
+              await openExternalUrl(
+                  context, absoluteDownloadUrl(info.serverUrl));
+            }
+          },
+          child: Text(info.canInstallInApp ? tr('立即更新') : tr('去下载')),
           ),
+        ),
       ],
     ),
   );
+}
+
+/// 应用内下载 → 校验 → 唤起系统安装器。
+///
+/// 任何一步失败都回落浏览器下载并把原因写进日志，绝不静默结束：
+/// 用户点了「立即更新」至少要拿到一个包。
+Future<void> downloadAndInstallUpdate(
+  BuildContext context,
+  AppUpdateInfo info,
+) async {
+  if (!context.mounted) return;
+  final progress = ValueNotifier<double?>(null);
+  final status = ValueNotifier<String>(tr('正在下载更新包…'));
+  BuildContext? dialogCtx;
+  unawaited(showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) {
+      dialogCtx = ctx;
+      return AlertDialog(
+        title: Text(tr('正在更新')),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ValueListenableBuilder<double?>(
+              valueListenable: progress,
+              builder: (context, value, child) =>
+                  LinearProgressIndicator(value: value),
+            ),
+            const SizedBox(height: 12),
+            ValueListenableBuilder<String>(
+              valueListenable: status,
+              builder: (context, text, child) => Text(
+                text,
+                style: const TextStyle(fontSize: 13, height: 1.5),
+              ),
+            ),
+          ],
+        ),
+      );
+    },
+  ));
+
+  try {
+    final fileName =
+        info.assetName.isNotEmpty ? info.assetName : 'xianyu-${info.version}.apk';
+    final file = await downloadApk(
+      info.apkUrl,
+      fileName: fileName,
+      onProgress: (received, total) {
+        if (total <= 0) return;
+        progress.value = (received / total).clamp(0.0, 1.0).toDouble();
+        final got = (received / 1048576).toStringAsFixed(1);
+        final all = (total / 1048576).toStringAsFixed(1);
+        status.value = '${tr('正在下载更新包…')} $got/$all MB';
+      },
+    );
+    if (info.sumsUrl.isNotEmpty) {
+      status.value = tr('正在校验安装包…');
+      final expected = await fetchExpectedSha256(info.sumsUrl, fileName);
+      if (expected != null && expected.isNotEmpty) {
+        final actual = await sha256OfFile(file);
+        if (actual != expected) {
+          throw StateError('SHA256 不匹配（$actual != $expected）');
+        }
+      }
+    }
+    status.value = tr('正在唤起安装器…');
+    if (!await canInstallApks()) {
+      // Android 8+ 需用户单独授权「安装未知应用」，跳授权页后回来再试一次
+      await openInstallSettings();
+      if (!await canInstallApks()) {
+        throw StateError('未授予「安装未知应用」权限');
+      }
+    }
+    final launched = await installApkFile(file.path);
+    if (!launched) throw StateError('系统安装器未启动');
+  } catch (e) {
+    AppLog.warn('update', '[update] 应用内更新失败：$e');
+    if (dialogCtx != null && dialogCtx!.mounted) {
+      Navigator.of(dialogCtx!).pop();
+      dialogCtx = null;
+    }
+    if (context.mounted) {
+      _toast(context, tr('应用内更新失败，已改为浏览器下载'));
+      await openExternalUrl(context, info.apkUrl);
+    }
+  } finally {
+    if (dialogCtx != null && dialogCtx!.mounted) {
+      Navigator.of(dialogCtx!).pop();
+    }
+    progress.dispose();
+    status.dispose();
+  }
 }
 
 Future<void> openExternalUrl(BuildContext context, String url) async {
@@ -174,9 +360,9 @@ Future<void> checkAppUpdate(
     }
     return;
   }
-  final LatestVersion? latest;
+  AppUpdateInfo? info;
   try {
-    latest = await ref.read(accountApiProvider).fetchServerUpdate();
+    info = await resolveUpdate(ref);
   } catch (_) {
     if (!silent && context.mounted) {
       _toast(context, tr('检查更新失败，请稍后重试'));
@@ -184,14 +370,8 @@ Future<void> checkAppUpdate(
     return;
   }
   if (!context.mounted) return;
-  if (latest == null) {
-    if (!silent && context.mounted) {
-      _toast(context, tr('当前已是最新版本（{v}）', {'v': appVersion}));
-    }
-    return;
-  }
-  if (hasNewVersion(latest)) {
-    await showUpdateDialog(context, latest);
+  if (info != null) {
+    await showUpdateDialog(context, info);
   } else if (!silent && context.mounted) {
     _toast(context, tr('当前已是最新版本（{v}）', {'v': appVersion}));
   }
@@ -203,14 +383,13 @@ Future<void> maybePromptStartupUpdate(WidgetRef ref) async {
   final mode = ref.read(settingsProvider).valueOrNull?.updateCheckMode;
   if (mode == 'never') return;
 
-  LatestVersion? latest;
+  AppUpdateInfo? info;
   try {
-    latest = await ref.read(accountApiProvider).fetchServerUpdate();
+    info = await resolveUpdate(ref);
   } catch (_) {
     return;
   }
-  if (latest == null) return;
-  if (!hasNewVersion(latest)) return;
+  if (info == null) return;
 
   final prefs = await SharedPreferences.getInstance();
   final today = _today();
@@ -219,7 +398,7 @@ Future<void> maybePromptStartupUpdate(WidgetRef ref) async {
 
   final ctx = appNavigatorKey.currentContext;
   if (ctx == null || !ctx.mounted) return;
-  await showUpdateDialog(ctx, latest);
+  await showUpdateDialog(ctx, info);
 }
 
 bool get isBetaBuild {

@@ -38,6 +38,9 @@
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS"/>
     <!-- 听歌识曲：麦克风录音 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- 自更新：从 GitHub Release 下载 APK 后需申请「安装未知应用」才能唤起
+         系统安装器（Android 8+ 必须声明并授权，否则 ACTION_VIEW 安装被拒） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- 扫码登录：相机扫码（桌面端二维码） -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>

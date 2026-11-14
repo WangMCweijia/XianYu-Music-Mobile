@@ -43,3 +43,8 @@ jobs:
       # 平台选择行左对齐：横向弹性滚动被推到负偏移时，整行会右移留出空白
       - name: Source bar align test
         run: flutter test test/source_bar_align_test.dart --reporter expanded
+
+      # 自更新源：版本比较 / tag 归一 / Release 资产挑选都是纯函数，
+      # 错了的后果是「有新版本不提示」或「提示了下载不到包」
+      - name: Update source test
+        run: flutter test test/update_source_test.dart --reporter expanded

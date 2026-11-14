@@ -53,6 +53,15 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 异常日志节流，避免尺寸反复变化时刷屏。
   int _lastWarnAt = 0;
 
+  /// 内容起点探针：宽度 0 的哨兵子项，用来量「内容从视口哪一点开始」。
+  ///
+  /// 只有它能把三种成因区分开：滚动位移（off）、视口被挤窄（vw）、内容
+  /// 自己在布局里被推走（dx0）。缺这一项，前两种会互相冒充。
+  final GlobalKey _contentStartKey = GlobalKey();
+
+  /// 异常时行内直接显示的量值；正常时保持 null（线上界面无任何痕迹）。
+  String? _diag;
+
   double get _padding => widget.floating ? 2 : 14;
 
   /// 仅供布局回归测试驱动一个负偏移，验证回正兜底。
@@ -132,30 +141,111 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     _controller.animateTo(target, duration: duration, curve: curve);
   }
 
-  /// 兜底之后如果几何仍然不对（越界到负值、视口被挤窄），留一条日志。
+  /// 量一次几何，异常时同时留日志和行内角标。
   ///
-  /// 正常滚动（用户自己往右滑，offset > 0）不算异常，不会打日志。日志带上
-  /// `w`（本行宽）与 `gx`（本行左缘的屏幕坐标）：这两个正常而内容仍偏右，
-  /// 说明是别处把内容推走了，可直接据此定位。
+  /// 四个量分别对应一种成因，缺哪个都会让其余三种互相冒充：
+  /// - `off`：滚动位移为负（越界）→ 内容被推右；
+  /// - `vw`：视口比本行窄 → 容器被挤小；
+  /// - `w` / `gx`：本行宽度与屏幕左坐标 → 整行被父级排歪；
+  /// - `dx0`：内容起点（应为 [_padding]）→ 内容自己在布局里被推走，
+  ///   这一项正是「off 归零、容器也够宽、却仍然右移」时唯一能露馅的量。
+  ///
+  /// 用户自己往右滑（off > 0）算正常操作，不判定为异常。
   void _warnIfAbnormal() {
     if (!mounted || !_controller.hasClients) return;
     final pos = _controller.position;
     final box = context.findRenderObject() as RenderBox?;
-    final ownWidth = box?.size.width ?? 0;
-    final globalX = box == null ? 0.0 : box.localToGlobal(Offset.zero).dx;
+    if (box == null || !box.hasSize) return;
+    final ownWidth = box.size.width;
+    final globalX = box.localToGlobal(Offset.zero).dx;
+    final probeBox = _contentStartKey.currentContext?.findRenderObject();
+    final probe = probeBox is RenderBox && probeBox.hasSize
+        ? probeBox.localToGlobal(Offset.zero, ancestor: box).dx
+        : _padding;
+    // 用户手动滚动过就不核对 dx0：此时 dx0 必然等于 padding - off
+    final contentShifted =
+        pos.pixels.abs() < 0.5 && (probe - _padding).abs() > 0.5;
     final bad = pos.pixels < -0.5 ||
-        (ownWidth > 0 && pos.viewportDimension < ownWidth - 4);
+        (ownWidth > 0 && pos.viewportDimension < ownWidth - 4) ||
+        contentShifted ||
+        // 非悬浮态这一行必须贴屏幕左缘；悬浮态父级自带内边距，不判 gx
+        (!widget.floating && globalX.abs() > 0.5);
+    _setDiag(bad
+        ? 'srcbar gx=${globalX.toStringAsFixed(0)} '
+            'off=${pos.pixels.toStringAsFixed(0)} '
+            'vw=${pos.viewportDimension.toStringAsFixed(0)} '
+            'w=${ownWidth.toStringAsFixed(0)} '
+            'dx0=${probe.toStringAsFixed(0)}'
+        : null);
     if (!bad) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastWarnAt < 1000) return;
     _lastWarnAt = now;
-    AppLog.warn(
-      'srcbar',
-      '[srcbar] 异常 '
-      'off=${pos.pixels.toStringAsFixed(0)} '
-      'vw=${pos.viewportDimension.toStringAsFixed(0)} '
-      'w=${ownWidth.toStringAsFixed(0)} '
-      'gx=${globalX.toStringAsFixed(0)}',
+    AppLog.warn('srcbar', '[srcbar] 异常 $_diag');
+  }
+
+  /// 只在量值变化时才重建，避免尺寸抖动把界面拖进重建循环。
+  void _setDiag(String? value) {
+    if (_diag == value) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _diag != value) setState(() => _diag = value);
+    });
+  }
+
+  /// 异常角标：正常时不存在（[_diag] 为 null），线上界面不留痕迹。
+  Widget _diagBadge(String text) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+        color: const Color(0xE6D32F2F),
+        child: Text(
+          text,
+          maxLines: 1,
+          style: const TextStyle(fontSize: 9, height: 1.2, color: Colors.white),
+        ),
+      );
+
+  Widget _list() {
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        // 滚动过程中每帧都排帧尾回调会让 pumpAndSettle / 真实渲染
+        // 一直有新帧，永远安静不下来，所以这里只在结束时兜。
+        if (notification is ScrollEndNotification &&
+            notification.metrics.pixels < 0 &&
+            !_clampScheduled) {
+          _clampScheduled = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _clampScheduled = false;
+            if (mounted) _clampToStart();
+          });
+        }
+        return false;
+      },
+      child: NotificationListener<ScrollMetricsNotification>(
+        // 内容或视口尺寸变了（切平台、字体缩放、旋转）也会触发，
+        // 只靠 ScrollNotification 会漏。
+        onNotification: (_) {
+          if (!_clampScheduled) {
+            _clampScheduled = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _clampScheduled = false;
+              if (!mounted) return;
+              _clampToStart();
+              _warnIfAbnormal();
+            });
+          }
+          return false;
+        },
+        child: ListView(
+          controller: _controller,
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          padding: EdgeInsets.symmetric(horizontal: _padding),
+          children: [
+            // 零尺寸哨兵：只用于量内容起点，不占位、不参与命中测试
+            SizedBox(key: _contentStartKey, width: 0, height: 0),
+            ...widget.children,
+          ],
+        ),
+      ),
     );
   }
 
@@ -166,43 +256,20 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
       // 父级是松约束（Column 居中排布）时必须明确吃满宽度，否则这一行
       // 可能被排成内容宽度再居中，症状与负偏移完全一样。
       width: double.infinity,
-      child: NotificationListener<ScrollNotification>(
-        onNotification: (notification) {
-          // 滚动过程中每帧都排帧尾回调会让 pumpAndSettle / 真实渲染
-          // 一直有新帧，永远安静不下来，所以这里只在结束时兜。
-          if (notification is ScrollEndNotification &&
-              notification.metrics.pixels < 0 &&
-              !_clampScheduled) {
-            _clampScheduled = true;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              _clampScheduled = false;
-              if (mounted) _clampToStart();
-            });
-          }
-          return false;
-        },
-        child: NotificationListener<ScrollMetricsNotification>(
-          // 内容或视口尺寸变了（切平台、字体缩放、旋转）也会触发，
-          // 只靠 ScrollNotification 会漏。
-          onNotification: (_) {
-            if (!_clampScheduled) {
-              _clampScheduled = true;
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _clampScheduled = false;
-                if (!mounted) return;
-                _clampToStart();
-                _warnIfAbnormal();
-              });
-            }
-            return false;
-          },
-          child: ListView(
-            controller: _controller,
-            scrollDirection: Axis.horizontal,
-            physics: const ClampingScrollPhysics(),
-            padding: EdgeInsets.symmetric(horizontal: _padding),
-            children: widget.children,
-          ),
+      // Align 把这一行钉在左缘：父级即便是居中排布，也不会整行右推
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            _list(),
+            if (_diag != null)
+              Positioned(
+                left: 0,
+                top: 0,
+                child: IgnorePointer(child: _diagBadge(_diag!)),
+              ),
+          ],
         ),
       ),
     );

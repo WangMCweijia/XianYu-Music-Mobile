@@ -59,9 +59,6 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 自己在布局里被推走（dx0）。缺这一项，前两种会互相冒充。
   final GlobalKey _contentStartKey = GlobalKey();
 
-  /// 异常时行内直接显示的量值；正常时保持 null（线上界面无任何痕迹）。
-  String? _diag;
-
   double get _padding => widget.floating ? 2 : 14;
 
   /// 仅供布局回归测试驱动一个负偏移，验证回正兜底。
@@ -141,14 +138,17 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     _controller.animateTo(target, duration: duration, curve: curve);
   }
 
-  /// 量一次几何，异常时同时留日志和行内角标。
+  /// 量一次几何，异常时留一条日志。
   ///
-  /// 四个量分别对应一种成因，缺哪个都会让其余三种互相冒充：
+  /// 五个量分别对应一种成因，缺哪个都会让其余几种互相冒充：
   /// - `off`：滚动位移为负（越界）→ 内容被推右；
   /// - `vw`：视口比本行窄 → 容器被挤小；
-  /// - `w` / `gx`：本行宽度与屏幕左坐标 → 整行被父级排歪；
-  /// - `dx0`：内容起点（应为 [_padding]）→ 内容自己在布局里被推走，
-  ///   这一项正是「off 归零、容器也够宽、却仍然右移」时唯一能露馅的量。
+  /// - `w` / `sw`：本行宽度 / 屏幕宽度 → 本行是否被父级挤窄；
+  /// - `gx`：本行左缘的屏幕坐标 → 整行被父级排歪（正常应为 0）；
+  /// - `dx0`：内容起点（正常等于 [_padding]）→ 内容自己在布局里被推走。
+  ///
+  /// 只写日志、不在界面上画角标：首帧（路由入场动画、父级尺寸未定）也会
+  /// 读到临时坐标，画出来会挡住真实内容，反而误导。
   ///
   /// 用户自己往右滑（off > 0）算正常操作，不判定为异常。
   void _warnIfAbnormal() {
@@ -170,38 +170,21 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
         contentShifted ||
         // 非悬浮态这一行必须贴屏幕左缘；悬浮态父级自带内边距，不判 gx
         (!widget.floating && globalX.abs() > 0.5);
-    _setDiag(bad
-        ? 'srcbar gx=${globalX.toStringAsFixed(0)} '
-            'off=${pos.pixels.toStringAsFixed(0)} '
-            'vw=${pos.viewportDimension.toStringAsFixed(0)} '
-            'w=${ownWidth.toStringAsFixed(0)} '
-            'dx0=${probe.toStringAsFixed(0)}'
-        : null);
     if (!bad) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastWarnAt < 1000) return;
     _lastWarnAt = now;
-    AppLog.warn('srcbar', '[srcbar] 异常 $_diag');
+    AppLog.warn(
+      'srcbar',
+      '[srcbar] 异常 '
+      'gx=${globalX.toStringAsFixed(0)} '
+      'off=${pos.pixels.toStringAsFixed(0)} '
+      'vw=${pos.viewportDimension.toStringAsFixed(0)} '
+      'w=${ownWidth.toStringAsFixed(0)} '
+      'sw=${MediaQuery.sizeOf(context).width.toStringAsFixed(0)} '
+      'dx0=${probe.toStringAsFixed(0)}',
+    );
   }
-
-  /// 只在量值变化时才重建，避免尺寸抖动把界面拖进重建循环。
-  void _setDiag(String? value) {
-    if (_diag == value) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _diag != value) setState(() => _diag = value);
-    });
-  }
-
-  /// 异常角标：正常时不存在（[_diag] 为 null），线上界面不留痕迹。
-  Widget _diagBadge(String text) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-        color: const Color(0xE6D32F2F),
-        child: Text(
-          text,
-          maxLines: 1,
-          style: const TextStyle(fontSize: 9, height: 1.2, color: Colors.white),
-        ),
-      );
 
   Widget _list() {
     return NotificationListener<ScrollNotification>(
@@ -259,18 +242,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
       // Align 把这一行钉在左缘：父级即便是居中排布，也不会整行右推
       child: Align(
         alignment: Alignment.centerLeft,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            _list(),
-            if (_diag != null)
-              Positioned(
-                left: 0,
-                top: 0,
-                child: IgnorePointer(child: _diagBadge(_diag!)),
-              ),
-          ],
-        ),
+        child: _list(),
       ),
     );
   }

@@ -24,24 +24,31 @@ import '../core/application_logger.dart';
 ///    被裁）。所以切平台一律走 [SourceBarScrollViewState.revealChild]：
 ///    自己量位置，目标显式钳进 `[0, maxScrollExtent]`，尺寸无效就不滚。
 ///
-/// 上面五条是"能想到的来路"，实测仍会在**冷启动首帧**留下错位（进搜索
-/// 结果页第一眼就偏，随手滑一下平台行才归位）。首帧的滚动位置/父级坐标
-/// 拿的是路由转场中途的值，之后既没有 `ScrollNotification` 也没有
-/// `ScrollMetricsNotification`，前四条全都不会被触发，于是错误被一直
-/// 保留到用户第一次触摸。所以再补两层**不依赖通知时机**的兜底：
-/// 6. 绘制层消化越界 —— 包一层 `AnimatedBuilder` 监听 controller，只要
-///    `offset < 0` 就用 `Transform.translate(-offset)` 把视觉拉回左缘，
-///    松手后的回正逻辑照旧；
-/// 7. 布局后自愈 —— 核对本行左缘屏幕坐标与内容起点，偏了就用
-///    `Transform.translate` 画回正确位置（行偏了修行、内容偏了修内容，
-///    两者互不干扰，都不动布局）；
-/// 8. 帧末自检 —— 上面几条全是事件驱动，而现场恰恰是"没有任何事件的
-///    那一帧"把错位固化下来的。每次 build 都排一次帧末核对，走完即弃。
+/// 上面五条是"能想到的来路"，实测仍会在**冷启动**留下错位（进搜索结果页
+/// 第一眼就偏，随手滑一下平台行才归位）。2.0.11 的真机日志把范围缩到很小：
 ///
-/// 2.0.10 的教训：兜底逻辑写对了、触发链也建好了，但 `addPostFrameCallback`
-/// 自己不会请求新帧，页面静止时回调永远等不到帧，链路在第一帧就断掉；而且
-/// 当初测量的是 `Transform` 自身的 render object，`RenderTransform` 的平移
-/// 不计入它自己的 `localToGlobal`，测出来的永远是"没补偿过"的坐标。
+/// ```text
+/// gx=339.3 off=0.0 vw=403.8 w=403.8 sw=403.8 dx0=14.0 cs=0.0 vs=0.0
+/// gx=22.4  off=0.0 vw=403.8 w=403.8 sw=403.8 dx0=14.0 cs=0.0 vs=0.0
+/// ```
+///
+/// 滚动位置是 0、视口与本行同宽、内容起点正好等于左内边距，唯一异常只有
+/// `gx`（本行左缘的屏幕坐标），而且 `vs` 恒为 0——说明兜底一次都没跑。
+/// 两条硬结论：
+///
+/// - **不是滚动位置的问题**，是整行被外部（父级布局 / 祖先绘制变换）推走了；
+/// - 2.0.11 用 `ModalRoute.animation.isCompleted` 当"坐标已定型"的闸门，
+///   这条判据在真实路由上会长期为 false（自定义转场 / 预测返回 / 被遮挡
+///   实例），于是自愈被永久关掉。
+///
+/// 所以：6. 绘制层消化越界（`offset < 0` 时反向平移）；
+/// 7. 采样判稳后校正整行 —— 连续几次读到同一 `gx` 才认为坐标定型，非 0 就
+///    用 `Transform.translate` 画回左缘；回正后计数归零，可反复武装；
+/// 8. 帧末自检 —— 上面几条全是事件驱动，而现场恰恰是"没有任何事件的
+///    那一帧"把错位固化下来的。每次 build 都排一次帧末核对，走完即弃；
+/// 9. 主动重绘 —— 转场结束、平台列表变化后，替用户"滑那一下"（见
+///    [_forceRepaint]）：几何全对却偏、滑动才恢复，只能是上一次绘制的像素
+///    被复用。
 class SourceBarScrollView extends StatefulWidget {
   const SourceBarScrollView({
     super.key,
@@ -93,8 +100,22 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 帧末自检是否已排入，避免一次 build 里重复排队。
   bool _verifyScheduled = false;
 
-  /// 路由入场动画：转场中整页都在平移，读到的坐标含动画位移，
-  /// 必须等 completed 之后才判定"排歪"。
+  /// 实例序号：日志里要能分清是哪一个实例在报（同一时刻可能有被遮挡的
+  /// 第二份，例如横屏嵌入面板保留的那一份）。
+  static int _seq = 0;
+  final int _id = ++_seq;
+
+  /// 上一次采样到的整行左缘屏幕坐标，以及"连续多少次读到同一个值"。
+  ///
+  /// 2.0.11 用 `ModalRoute.animation.isCompleted` 判静止，现场日志证明这条
+  /// 判据不成立：转场结束 2.4s 之后仍读到 gx=22.4，说明那个 animation 在
+  /// 真实路由上可以长期不 completed（自定义转场 / 预测返回 / 被遮挡实例），
+  /// 于是自愈一次都没跑（日志里 vs 恒为 0）。改用纯采样：只有连续几次读到
+  /// 同一个坐标才算"坐标已定型"，避免把入场平移动画当成"排歪"。
+  double? _lastGx;
+  int _sameGx = 0;
+
+  /// 路由入场动画：转场结束是"布局稳了"的信号，用来起一段自愈 + 主动重绘。
   Animation<double>? _routeAnim;
 
   /// 内容起点探针：宽度 0 的哨兵子项，用来量「内容从视口哪一点开始」。
@@ -130,10 +151,15 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   @override
   void didUpdateWidget(covariant SourceBarScrollView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 换平台集合（登录/插件加载完成）会让内容宽度变化，重新起一段自愈
+    // 换平台集合（登录/插件加载完成）会让内容宽度变化，重新起一段自愈。
+    //
+    // 冷启动的现场正是这一刻：进入结果页约 1s 后插件加载完成、平台列表
+    // 从 1 个变成 N 个，随后第一眼看到的就是错位。所以这里除了重排，
+    // 还要主动重绘一次，把旧内容宽度下画出来的那一帧彻底作废。
     if (oldWidget.children.length != widget.children.length ||
         oldWidget.floating != widget.floating) {
       _scheduleHeal(20);
+      _forceRepaintSoon();
     }
   }
 
@@ -149,9 +175,47 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   }
 
   void _onRouteStatus(AnimationStatus status) {
-    // 转场结束才是"稳定坐标"，此时再核一次（冷启动 push 进搜索结果页
-    // 正是这条路径：转场期间读到的是整页平移动画中的 x）。
-    if (status == AnimationStatus.completed) _scheduleHeal(24);
+    // 转场结束：起一段自愈帧链，隔几帧再主动重绘一次（见 [_forceRepaint]）。
+    if (status == AnimationStatus.completed) {
+      _scheduleHeal(24);
+      _forceRepaintSoon();
+    }
+  }
+
+  void _forceRepaintSoon([int frames = 3]) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (frames > 1) {
+        _forceRepaintSoon(frames - 1);
+      } else {
+        _forceRepaint();
+      }
+    });
+    WidgetsBinding.instance.scheduleFrame();
+  }
+
+  /// 主动重绘这一行（含每个胶囊自己的 RepaintBoundary）。
+  ///
+  /// 现场是「几何全对、画面却偏」：日志里 off=0、dx0=14、vw=w=sw，唯一异常
+  /// 只有 gx，而用户滑动一下就恢复。滑动让这一行重绘，所以立刻归位；这正
+  /// 说明错的是**上一次绘制的像素**（转场中途那一帧被 RepaintBoundary /
+  /// raster 缓存复用），不是布局。这里替用户"滑那一下"：转场结束、平台列表
+  /// 变化后各重绘一次。
+  ///
+  /// 必须逐个后代标记：每个胶囊在列表里各自是 RepaintBoundary，只标父级
+  /// 不会让它们的缓存失效。
+  void _forceRepaint() {
+    if (!mounted) return;
+    final root = context.findRenderObject();
+    if (root == null) return;
+    void visit(RenderObject node) {
+      node.markNeedsPaint();
+      node.visitChildren(visit);
+    }
+
+    root.markNeedsPaint();
+    root.visitChildren(visit);
+    WidgetsBinding.instance.scheduleFrame();
   }
 
   /// 连续 [frames] 帧做「回正 + 几何自愈」。
@@ -176,8 +240,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 布局后核对：整行左缘必须在屏幕 x=0。
   ///
   /// 非悬浮态这一行设计上就贴屏幕左缘，所以读到的 gx 不为 0 只可能是父级
-  /// 排歪/首帧残留坐标，用绘制补偿拉回去；补偿只累加差值，不会和上一轮
-  /// 的补偿叠加（`rawGx` 已包含 `_visualShift`）。
+  /// 排歪 / 祖先绘制变换 / 转场残留坐标，用绘制补偿拉回去。
   ///
   /// 测量对象必须是**内层 SizedBox**（[_rowKey]），不能是 `context` 自己的
   /// render object——2.0.10 就错在这里：build 根是 `Transform`，而
@@ -185,20 +248,31 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 都读到"没补偿过"的坐标，位移被反复叠加。
   void _healGeometry() {
     if (!mounted) return;
-    // 转场未完成时坐标含动画位移，不能当异常
-    if (ModalRoute.of(context)?.animation?.isCompleted == false) return;
     final box = _rowKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
 
-    // 一、整行被父级排歪：非悬浮态必须贴屏幕左缘（悬浮态父级自带内边距，
-    //     左缘本来就不在 0，不能按 0 修）
-    if (!widget.floating && _rowHealTries < 8) {
-      final rawGx = box.localToGlobal(Offset.zero).dx;
-      if (rawGx.abs() > 0.5) {
-        _rowHealTries++;
-        setState(() => _visualShift = _visualShift - rawGx);
-        AppLog.warn('srcbar', '[srcbar] heal-row ${_geoLine(box)}');
-      }
+    // 一、整行位置：先判"坐标定型"，再决定修不修。
+    //
+    // 分段采样的理由见 [_lastGx]：`animation.isCompleted` 在真实路由上会
+    // 长期为 false，用它当闸门等于把兜底永久关掉。
+    final gx = box.localToGlobal(Offset.zero).dx;
+    final prev = _lastGx;
+    _lastGx = gx;
+    _sameGx = (prev != null && (gx - prev).abs() < 0.5) ? _sameGx + 1 : 0;
+    final settled = _sameGx >= 2;
+
+    if (gx.abs() <= 0.5) {
+      _rowHealTries = 0; // 已回正：重新武装，下次跑偏还能修
+    } else if (!widget.floating && settled && _rowHealTries < 24) {
+      _rowHealTries++;
+      setState(() => _visualShift -= gx);
+      _lastGx = null; // 补偿后重新采样，别拿旧值判稳定
+      _sameGx = 0;
+      AppLog.warn(
+        'srcbar',
+        '[srcbar] heal-row id=$_id ${_geoLine(box)} chain=${_chainLine(box)}',
+      );
+      return; // 下一帧再看补偿后的读数
     }
 
     // 二、内容起点不在左内边距：offset 归零时内容必须从 padding 开始。
@@ -215,7 +289,28 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     if (dev.abs() <= 0.5) return;
     _contentHealTries++;
     setState(() => _contentShift = _contentShift - dev);
-    AppLog.warn('srcbar', '[srcbar] heal-content ${_geoLine(box)}');
+    AppLog.warn('srcbar', '[srcbar] heal-content id=$_id ${_geoLine(box)}');
+  }
+
+  /// 从本行往上找哪一层把坐标推走了：只列 dx 不为 0 的祖先。
+  ///
+  /// 下次复现时这一行直接给出真凶（`Transform` 是绘制补偿，`RenderViewport`
+  /// 是某个横向滚动容器，`RenderPadding` 是内边距……），不用再靠猜。
+  String _chainLine(RenderBox box) {
+    final buf = StringBuffer();
+    RenderObject? node = box.parent;
+    var depth = 0;
+    while (node != null && depth < 14) {
+      if (node is RenderBox && node.hasSize) {
+        final dx = node.localToGlobal(Offset.zero).dx;
+        if (dx.abs() > 0.5) {
+          buf.write('${node.runtimeType}@${dx.toStringAsFixed(0)} ');
+        }
+      }
+      node = node.parent;
+      depth++;
+    }
+    return buf.isEmpty ? '-' : buf.toString().trimRight();
   }
 
   @override
@@ -294,14 +389,16 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     final probe = probeBox is RenderBox && probeBox.hasSize
         ? probeBox.localToGlobal(Offset.zero, ancestor: box).dx
         : _padding;
-    return 'gx=${box.localToGlobal(Offset.zero).dx.toStringAsFixed(1)} '
+    return 'id=$_id '
+        'gx=${box.localToGlobal(Offset.zero).dx.toStringAsFixed(1)} '
         'off=${(pos?.pixels ?? 0).toStringAsFixed(1)} '
         'vw=${(pos?.viewportDimension ?? 0).toStringAsFixed(1)} '
         'w=${box.size.width.toStringAsFixed(1)} '
         'sw=${MediaQuery.sizeOf(context).width.toStringAsFixed(1)} '
         'dx0=${probe.toStringAsFixed(1)} '
         'cs=${_contentShift.toStringAsFixed(1)} '
-        'vs=${_visualShift.toStringAsFixed(1)}';
+        'vs=${_visualShift.toStringAsFixed(1)} '
+        'st=$_sameGx';
   }
 
   /// 量一次几何，异常时留一条日志。
@@ -329,13 +426,20 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     final bad = pos.pixels < -0.5 ||
         (ownWidth > 0 && pos.viewportDimension < ownWidth - 4) ||
         contentShifted ||
-        // 非悬浮态这一行必须贴屏幕左缘；悬浮态父级自带内边距，不判 gx
-        (!widget.floating && globalX.abs() > 0.5);
+        // 非悬浮态这一行必须贴屏幕左缘；悬浮态父级自带内边距，不判 gx。
+        // 还要求坐标已定型（`_sameGx`）：转场途中整页在平移，gx 必然非 0，
+        // 那是正常动画，不该刷进日志里冒充故障（2.0.11 的日志就是被这种
+        // 假阳性占满的）。
+        (!widget.floating && _sameGx >= 2 && globalX.abs() > 0.5);
     if (!bad) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastWarnAt < 300) return;
     _lastWarnAt = now;
-    AppLog.warn('srcbar', '[srcbar] 异常 ${_geoLine(box)}');
+    // chain 只在异常时算：它要沿祖先链逐层取变换，平时没必要付这个成本。
+    AppLog.warn(
+      'srcbar',
+      '[srcbar] 异常 ${_geoLine(box)} chain=${_chainLine(box)}',
+    );
   }
 
   Widget _list() {

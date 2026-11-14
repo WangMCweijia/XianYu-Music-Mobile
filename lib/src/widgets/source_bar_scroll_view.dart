@@ -32,9 +32,17 @@ import '../core/application_logger.dart';
 /// 6. 绘制层消化越界 —— 包一层 `AnimatedBuilder` 监听 controller，只要
 ///    `offset < 0` 就用 `Transform.translate(-offset)` 把视觉拉回左缘，
 ///    松手后的回正逻辑照旧；
-/// 7. 布局后自愈 —— 转场完成 / 首帧后连续几帧核对本行左缘屏幕坐标，
-///    父级把整行排歪时用 `Transform.translate(-gx)` 画回 x=0。
-/// 两者都只改绘制位置，不动布局，不会和 `Align(centerLeft)` 打架。
+/// 7. 布局后自愈 —— 核对本行左缘屏幕坐标与内容起点，偏了就用
+///    `Transform.translate` 画回正确位置（行偏了修行、内容偏了修内容，
+///    两者互不干扰，都不动布局）；
+/// 8. 常驻帧回调 —— 上面几条全是事件驱动，而现场恰恰是"没有任何事件的
+///    那一帧"把错位固化下来的。`addPersistentFrameCallback` 每绘制帧自检，
+///    不再依赖任何通知。
+///
+/// 2.0.10 的教训：兜底逻辑写对了、触发链也建好了，但 `addPostFrameCallback`
+/// 自己不会请求新帧，页面静止时回调永远等不到帧，链路在第一帧就断掉；而且
+/// 当初测量的是 `Transform` 自身的 render object，`RenderTransform` 的平移
+/// 不计入它自己的 `localToGlobal`，测出来的永远是"没补偿过"的坐标。
 class SourceBarScrollView extends StatefulWidget {
   const SourceBarScrollView({
     super.key,
@@ -71,8 +79,17 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 旧尺寸、之后没人重排"的现场兜底。悬浮态依赖父级内边距，不补偿。
   double _visualShift = 0;
 
-  /// 自愈次数上限，防止父级恒错时每帧重排。
-  int _healTries = 0;
+  /// 内容起点偏了（`offset` 为 0 却不是从 padding 开始）时的绘制补偿。
+  ///
+  /// 与 [_visualShift] 分别管"整行在哪"和"内容在行内哪"，两者都不动布局，
+  /// 所以不会和 `Align` / ListView 的滚动打架。
+  double _contentShift = 0;
+
+  /// 整行位置的自愈次数上限，防止父级恒错时每帧重排。
+  int _rowHealTries = 0;
+
+  /// 内容起点自愈次数上限，同上。
+  int _contentHealTries = 0;
 
   /// 路由入场动画：转场中整页都在平移，读到的坐标含动画位移，
   /// 必须等 completed 之后才判定"排歪"。
@@ -83,6 +100,12 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 只有它能把三种成因区分开：滚动位移（off）、视口被挤窄（vw）、内容
   /// 自己在布局里被推走（dx0）。缺这一项，前两种会互相冒充。
   final GlobalKey _contentStartKey = GlobalKey();
+
+  /// 这一行本体的 key：`_healGeometry` 用它量真实屏幕坐标。
+  ///
+  /// 必须挂在 `Transform` 的子节点上——`RenderTransform` 自身的平移不计入
+  /// 它自己的 `localToGlobal`，直接量 State 的 render object 会漏掉补偿。
+  final GlobalKey _rowKey = GlobalKey();
 
   double get _padding => widget.floating ? 2 : 14;
 
@@ -98,9 +121,31 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   void initState() {
     super.initState();
     _controller.addListener(_onOffsetChanged);
-    // 首帧后再兜几次：PageStorage 恢复、首帧尺寸未定、路由转场中途都可能
-    // 落在错误位置，而且这种错位往往不会再触发任何滚动通知。
-    _scheduleHeal(6);
+    // 常驻帧回调：只要这一行所在页面还在绘制，每帧都自检一次。
+    //
+    // 前面所有兜底都是"事件驱动"（滚动通知、尺寸通知、转场完成、有限帧链），
+    // 而现场恰恰是没有事件的那一次布局——错位被画出来之后再没有任何通知，
+    // 于是它一直停在屏幕上，直到用户手指碰到它才触发一次缩放/重建。
+    // 常驻帧回调不依赖任何事件，天然覆盖这种"哑帧"。
+    WidgetsBinding.instance.addPersistentFrameCallback(_onPersistentFrame);
+    // 首屏的帧链仍然要：页面静止后没有帧，常驻回调也不会被调用
+    _scheduleHeal(24);
+  }
+
+  @override
+  void didUpdateWidget(covariant SourceBarScrollView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 换平台集合（登录/插件加载完成）会让内容宽度变化，重新起一段自愈
+    if (oldWidget.children.length != widget.children.length ||
+        oldWidget.floating != widget.floating) {
+      _scheduleHeal(20);
+    }
+  }
+
+  void _onPersistentFrame(Duration _) {
+    if (!mounted) return;
+    _clampToStart();
+    _healGeometry();
   }
 
   @override
@@ -117,13 +162,17 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   void _onRouteStatus(AnimationStatus status) {
     // 转场结束才是"稳定坐标"，此时再核一次（冷启动 push 进搜索结果页
     // 正是这条路径：转场期间读到的是整页平移动画中的 x）。
-    if (status == AnimationStatus.completed) _scheduleHeal(3);
+    if (status == AnimationStatus.completed) _scheduleHeal(24);
   }
 
   /// 连续 [frames] 帧做「回正 + 几何自愈」。
   ///
   /// 不能只做一次：首帧时 ListView 可能还没拿到最终约束，父级也可能还在
   /// 用上一轮的尺寸。多跑几帧成本可忽略（每帧只是两次 render box 读值）。
+  ///
+  /// 必须自己 `scheduleFrame()`：`addPostFrameCallback` 自带不请求新帧，
+  /// 页面静止时回调会一直挂着，自愈链在第一帧就断掉——这正是 2.0.10
+  /// 兜底没生效的原因（链路建好了，但后面没有帧来喂它）。
   void _scheduleHeal(int frames) {
     if (frames <= 0) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -132,6 +181,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
       _healGeometry();
       _scheduleHeal(frames - 1);
     });
+    WidgetsBinding.instance.scheduleFrame();
   }
 
   /// 布局后核对：整行左缘必须在屏幕 x=0。
@@ -139,27 +189,49 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 非悬浮态这一行设计上就贴屏幕左缘，所以读到的 gx 不为 0 只可能是父级
   /// 排歪/首帧残留坐标，用绘制补偿拉回去；补偿只累加差值，不会和上一轮
   /// 的补偿叠加（`rawGx` 已包含 `_visualShift`）。
+  ///
+  /// 测量对象必须是**内层 SizedBox**（[_rowKey]），不能是 `context` 自己的
+  /// render object——2.0.10 就错在这里：build 根是 `Transform`，而
+  /// `RenderTransform` 自身的平移不计入它自己的 `localToGlobal`，于是每帧
+  /// 都读到"没补偿过"的坐标，位移被反复叠加。
   void _healGeometry() {
-    if (!mounted || widget.floating) return;
+    if (!mounted) return;
     // 转场未完成时坐标含动画位移，不能当异常
     if (ModalRoute.of(context)?.animation?.isCompleted == false) return;
-    final box = context.findRenderObject() as RenderBox?;
+    final box = _rowKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
-    final rawGx = box.localToGlobal(Offset.zero).dx;
-    if (rawGx.abs() <= 0.5) return;
-    if (_healTries >= 8) return;
-    _healTries++;
-    final shift = _visualShift - rawGx;
-    setState(() => _visualShift = shift);
-    AppLog.warn(
-      'srcbar',
-      '[srcbar] heal gx=${rawGx.toStringAsFixed(1)} '
-      'shift=${shift.toStringAsFixed(1)}',
-    );
+
+    // 一、整行被父级排歪：非悬浮态必须贴屏幕左缘（悬浮态父级自带内边距，
+    //     左缘本来就不在 0，不能按 0 修）
+    if (!widget.floating && _rowHealTries < 8) {
+      final rawGx = box.localToGlobal(Offset.zero).dx;
+      if (rawGx.abs() > 0.5) {
+        _rowHealTries++;
+        setState(() => _visualShift = _visualShift - rawGx);
+        AppLog.warn('srcbar', '[srcbar] heal-row ${_geoLine(box)}');
+      }
+    }
+
+    // 二、内容起点不在左内边距：offset 归零时内容必须从 padding 开始。
+    //     这一条覆盖"滚动位置是 0、整行也在左缘，但内容整体右移"的现场，
+    //     也就是 offset 与 gx 都正常、前两层都测不到的那种。
+    if (_contentHealTries >= 8) return;
+    if (!_controller.hasClients) return;
+    final pos = _controller.position;
+    if (pos.pixels.abs() > 0.5) return; // 滚动中：起点随 offset 变化属正常
+    final probeBox = _contentStartKey.currentContext?.findRenderObject();
+    if (probeBox is! RenderBox || !probeBox.hasSize) return;
+    final probe = probeBox.localToGlobal(Offset.zero, ancestor: box).dx;
+    final dev = probe - (_padding + _contentShift);
+    if (dev.abs() <= 0.5) return;
+    _contentHealTries++;
+    setState(() => _contentShift = _contentShift - dev);
+    AppLog.warn('srcbar', '[srcbar] heal-content ${_geoLine(box)}');
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removePersistentFrameCallback(_onPersistentFrame);
     _routeAnim?.removeStatusListener(_onRouteStatus);
     _controller.removeListener(_onOffsetChanged);
     _controller.dispose();
@@ -220,14 +292,31 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     _controller.animateTo(target, duration: duration, curve: curve);
   }
 
-  /// 量一次几何，异常时留一条日志。
+  /// 一行几何快照：五个量分别对应一种成因，缺哪个都会让其余几种互相冒充。
   ///
-  /// 五个量分别对应一种成因，缺哪个都会让其余几种互相冒充：
   /// - `off`：滚动位移为负（越界）→ 内容被推右；
   /// - `vw`：视口比本行窄 → 容器被挤小；
   /// - `w` / `sw`：本行宽度 / 屏幕宽度 → 本行是否被父级挤窄；
   /// - `gx`：本行左缘的屏幕坐标 → 整行被父级排歪（正常应为 0）；
-  /// - `dx0`：内容起点（正常等于 [_padding]）→ 内容自己在布局里被推走。
+  /// - `dx0`：内容起点（正常等于 [_padding]）→ 内容自己在布局里被推走；
+  /// - `cs` / `vs`：内容起点补偿 / 整行补偿，用来确认补偿有没有累积过头。
+  String _geoLine(RenderBox box) {
+    final pos = _controller.hasClients ? _controller.position : null;
+    final probeBox = _contentStartKey.currentContext?.findRenderObject();
+    final probe = probeBox is RenderBox && probeBox.hasSize
+        ? probeBox.localToGlobal(Offset.zero, ancestor: box).dx
+        : _padding;
+    return 'gx=${box.localToGlobal(Offset.zero).dx.toStringAsFixed(1)} '
+        'off=${(pos?.pixels ?? 0).toStringAsFixed(1)} '
+        'vw=${(pos?.viewportDimension ?? 0).toStringAsFixed(1)} '
+        'w=${box.size.width.toStringAsFixed(1)} '
+        'sw=${MediaQuery.sizeOf(context).width.toStringAsFixed(1)} '
+        'dx0=${probe.toStringAsFixed(1)} '
+        'cs=${_contentShift.toStringAsFixed(1)} '
+        'vs=${_visualShift.toStringAsFixed(1)}';
+  }
+
+  /// 量一次几何，异常时留一条日志。
   ///
   /// 只写日志、不在界面上画角标：首帧（路由入场动画、父级尺寸未定）也会
   /// 读到临时坐标，画出来会挡住真实内容，反而误导。
@@ -236,7 +325,9 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   void _warnIfAbnormal() {
     if (!mounted || !_controller.hasClients) return;
     final pos = _controller.position;
-    final box = context.findRenderObject() as RenderBox?;
+    // 用 _rowKey（Transform 内部）而不是 State 自己的 render object：
+    // RenderTransform 自身平移不计入自己的 localToGlobal，量它会漏掉补偿。
+    final box = _rowKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
     final ownWidth = box.size.width;
     final globalX = box.localToGlobal(Offset.zero).dx;
@@ -245,8 +336,8 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
         ? probeBox.localToGlobal(Offset.zero, ancestor: box).dx
         : _padding;
     // 用户手动滚动过就不核对 dx0：此时 dx0 必然等于 padding - off
-    final contentShifted =
-        pos.pixels.abs() < 0.5 && (probe - _padding).abs() > 0.5;
+    final contentShifted = pos.pixels.abs() < 0.5 &&
+        (probe - _padding - _contentShift).abs() > 0.5;
     final bad = pos.pixels < -0.5 ||
         (ownWidth > 0 && pos.viewportDimension < ownWidth - 4) ||
         contentShifted ||
@@ -254,31 +345,26 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
         (!widget.floating && globalX.abs() > 0.5);
     if (!bad) return;
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastWarnAt < 1000) return;
+    if (now - _lastWarnAt < 300) return;
     _lastWarnAt = now;
-    AppLog.warn(
-      'srcbar',
-      '[srcbar] 异常 '
-      'gx=${globalX.toStringAsFixed(0)} '
-      'off=${pos.pixels.toStringAsFixed(0)} '
-      'vw=${pos.viewportDimension.toStringAsFixed(0)} '
-      'w=${ownWidth.toStringAsFixed(0)} '
-      'sw=${MediaQuery.sizeOf(context).width.toStringAsFixed(0)} '
-      'dx0=${probe.toStringAsFixed(0)}',
-    );
+    AppLog.warn('srcbar', '[srcbar] 异常 ${_geoLine(box)}');
   }
 
   Widget _list() {
-    // 绘制层消化越界：offset < 0 时内容整体被推到右边，反向平移把视觉
-    // 拉回左缘。正常滚动（offset >= 0）直接透传 child，不重建。
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        final off = _controller.hasClients ? _controller.offset : 0.0;
-        if (off >= 0) return child!;
-        return Transform.translate(offset: Offset(-off, 0), child: child);
-      },
-      child: _scrollView(),
+    // 第一层：内容起点补偿（整行位置对、内容却在行内偏右）
+    // 第二层：绘制层消化越界——offset < 0 时内容整体被推到右边，反向平移
+    //         把视觉拉回左缘。正常滚动（offset >= 0）直接透传 child，不重建。
+    return Transform.translate(
+      offset: Offset(_contentShift, 0),
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          final off = _controller.hasClients ? _controller.offset : 0.0;
+          if (off >= 0) return child!;
+          return Transform.translate(offset: Offset(-off, 0), child: child);
+        },
+        child: _scrollView(),
+      ),
     );
   }
 
@@ -293,7 +379,10 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
           _clampScheduled = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _clampScheduled = false;
-            if (mounted) _clampToStart();
+            if (!mounted) return;
+            _clampToStart();
+            // 用户滑动过就等于"有人重排过"，顺手把几何也核一遍
+            _healGeometry();
           });
         }
         return false;
@@ -308,6 +397,9 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
               _clampScheduled = false;
               if (!mounted) return;
               _clampToStart();
+              // 内容或视口尺寸刚变过，这是"冷启动搜索出结果"命中错位的
+              // 那一刻，必须顺手核几何（2.0.10 只回正了 offset，漏了这条）
+              _healGeometry();
               _warnIfAbnormal();
             });
           }
@@ -331,20 +423,31 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   @override
   Widget build(BuildContext context) {
     // Transform 放在最外层：它就是"整行被父级排歪"的绘制补偿，
-    // `_healGeometry` 读的 localToGlobal 会沿祖先链累积到它，所以测到的
-    // 是补偿后的实际屏幕坐标——补偿到位后读数归零，不会反复叠加。
+    // `_healGeometry` 量的 `_rowKey` 在它内部，坐标沿祖先链会累积到它，
+    // 所以读到的是补偿后的实际屏幕坐标——补偿到位后读数归零，不会叠加。
     return Transform.translate(
       offset: Offset(_visualShift, 0),
-      child: SizedBox(
-        height: 40,
-        // 父级是松约束（Column 居中排布）时必须明确吃满宽度，否则这一行
-        // 可能被排成内容宽度再居中，症状与负偏移完全一样。
-        width: double.infinity,
-        child: Align(
-          // Align 把这一行钉在左缘：父级即便是居中排布，也不会整行右推
-          alignment: Alignment.centerLeft,
-          child: _list(),
-        ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // 父级若给到无界宽度，`width: double.infinity` 在 release 下不会
+          // 报 assert，只会算出奇异尺寸，整行被排到屏幕外面。这里落成具体
+          // 值：优先用父级可用宽度，拿不到再退到屏宽。
+          final width = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : MediaQuery.sizeOf(context).width;
+          return SizedBox(
+            key: _rowKey,
+            height: 40,
+            // 父级是松约束（Column 居中排布）时也必须明确吃满宽度，否则
+            // 这一行会被排成内容宽度再居中，症状与负偏移完全一样。
+            width: width,
+            child: Align(
+              // Align 把这一行钉在左缘：父级即便是居中排布，也不会整行右推
+              alignment: Alignment.centerLeft,
+              child: _list(),
+            ),
+          );
+        },
       ),
     );
   }

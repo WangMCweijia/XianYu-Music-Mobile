@@ -66,11 +66,13 @@ class DebugPage extends ConsumerWidget {
     isCloud: true,
   );
 
-  static LatestVersion get _fakeLatestVersion => const LatestVersion(
+  /// 调试用的假版本：带 APK 直链，能顺带把「应用内下载安装」这条链路也
+  /// 走一遍（真实下载 example.com 会失败并回落浏览器，不会真装东西）
+  static AppUpdateInfo get _fakeLatestVersion => const AppUpdateInfo(
     version: '9.9.9',
-    content: '调试用假更新日志：\n· 新增调试弹窗覆盖\n· 修复若干问题',
-    downloadUrl: 'https://example.com/app.apk',
-    fileSize: 36700160,
+    notes: '调试用假更新日志：\n· 新增调试弹窗覆盖\n· 修复若干问题',
+    apkUrl: 'https://example.com/app.apk',
+    assetName: 'app.apk',
   );
 
   @override

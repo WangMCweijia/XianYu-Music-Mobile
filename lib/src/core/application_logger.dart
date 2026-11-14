@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import '../i18n/i18n.dart';
+import 'diag_box.dart';
 
 enum LogLevel {
   debug('debug'),
@@ -220,6 +221,14 @@ class ApplicationLogManager extends StateNotifier<List<AppLogEntry>> {
         '[${DateTime.fromMillisecondsSinceEpoch(e.timestamp).toIso8601String()}] '
         '[${e.level.value.toUpperCase()}] [${e.category}] ${e.message}',
       );
+    }
+    // 黑匣子：独立于 300 条日志环的固定采样，用户复现完过一会儿才导出也
+    // 不会丢现场（详见 diag_box.dart）。
+    final box = DiagBox.dumpAll();
+    if (box.isNotEmpty) {
+      buffer
+        ..writeln('')
+        ..writeln(box);
     }
     return buffer.toString().trimRight();
   }

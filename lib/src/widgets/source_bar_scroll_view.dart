@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
 import '../core/application_logger.dart';
+import '../core/diag_box.dart';
 
 /// 横向「音源 / 平台」选择行。
 ///
@@ -68,6 +69,9 @@ import '../core/application_logger.dart';
 ///     `forcePixels` / `correctPixels` 三条写入路径全部拦一遍，负值一律
 ///     落成 0。无论谁写、什么时候写，都进不去（位置被替换时走 `absorb`，
 ///     那条也补了）。
+/// 12. 黑匣子 + 硬复位 —— 固定 300ms 采样独立留存（导出必带），转场完成
+///     后把位置/绘制补偿/内容补偿一次性归零并换 key 重建视口，等价于用户
+///     「滑那一下」，不依赖任何通知时机。
 /// 11. 常驻看门狗 —— 上面十条都要"有帧"才跑，而现场恰恰是坐标被冻住后
 ///     页面不再产生帧（2.0.13 日志里 `st` 连续 8 次采样都是同一个值）。
 ///     定时器不看渲染管线脸色，300ms 内必核对并纠正一次；判定"定型"用
@@ -170,6 +174,26 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   static int _seq = 0;
   final int _id = ++_seq;
 
+  /// 黑匣子：固定 300ms 采样一次几何，独立于 300 条日志环，导出时一并带出。
+  ///
+  /// 现场丢失的真实原因不是「没打日志」，而是用户装完包就导出——那时故障还
+  /// 没发生，导出的只有启动十几秒。黑匣子不依赖导出的时机，也不受日志环裁剪
+  /// 影响；下次任何一次导出都会带出这里的样本与最差样本。
+  static final DiagBox _box = DiagBox('srcbar');
+
+  /// ListView 代数：+1 即整体重建视口与滚动位置（见 [_hardReset]）。
+  int _epoch = 0;
+
+  /// 是否还没有经历过一次「转场完成」的硬复位：首次进入页面时无条件重建，
+  /// 之后只在几何真的不对时才重建，避免从详情页返回时把用户滚到的位置重置。
+  bool _resetOnEnter = true;
+
+  /// 硬复位防抖时间戳。
+  int _lastResetMs = 0;
+
+  /// 本实例见过的最高异常度，只在创新高时写一条日志（会落盘、跨重启留存）。
+  double _worstSev = 0;
+
   /// 上一次采样到的整行左缘屏幕坐标，以及"连续多少次读到同一个值"。
   ///
   /// 2.0.11 用 `ModalRoute.animation.isCompleted` 判静止，现场日志证明这条
@@ -245,14 +269,24 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
       final gx = box.localToGlobal(Offset.zero).dx;
       final sig = '${gx.round()}/${(pos?.pixels ?? 0).round()}/'
           '${_contentShift.round()}/${_visualShift.round()}';
+      final line = _geoLine(box);
+      final sev = _severityOf(box);
+      // 黑匣子无条件记：日志环只有 300 条、5s 心跳，现场很容易被挤掉
+      _box.add(
+        '[${DateTime.now().toIso8601String()}] $line',
+        severity: sev,
+      );
+      // 异常度创新高时立刻写日志：这一条会进 300 条环并落盘，重启后仍在，
+      // 是唯一「错过时机也能留下」的现场记录。
+      if (sev > _worstSev + 1) {
+        _worstSev = sev;
+        AppLog.warn('srcbar', '[srcbar] worst $line chain=${_chainLine(box)}');
+      }
       final changed = sig != _lastSig;
       if (!changed && now - _lastProbeAt < 5000) return;
       _lastSig = sig;
       _lastProbeAt = now;
-      AppLog.info(
-        'srcbar',
-        '[srcbar] probe${changed ? " *" : ""} ${_geoLine(box)}',
-      );
+      AppLog.info('srcbar', '[srcbar] probe${changed ? " *" : ""} $line');
     });
   }
 
@@ -262,6 +296,11 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// （`value=-197.7` 这种就是半屏）；不再出现则说明是绘制层。
   void _onForcedNegative(double value) {
     _clampHits++;
+    _box.add(
+      '[${DateTime.now().toIso8601String()}] [clamp] id=$_id '
+      'value=${value.toStringAsFixed(1)} hits=$_clampHits',
+      severity: 1000 + value.abs(),
+    );
     if (!_diag) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastClampLogAt < 500) return;
@@ -288,6 +327,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
       // 平台列表刚变过：错位就在这一刻被画出来，让采样立刻吐一条
       _lastSig = '';
       _lastProbeAt = 0;
+      _hardResetSoon('children');
     }
   }
 
@@ -307,7 +347,109 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     if (status == AnimationStatus.completed) {
       _scheduleHeal(24);
       _forceRepaintSoon();
+      // 首次进入页面无条件硬复位（整行重建 = 替用户「滑那一下」）；
+      // 之后只在几何真的不对时复位，避免返回时把用户滚到的位置清零。
+      if (_resetOnEnter) {
+        _resetOnEnter = false;
+        _hardResetSoon('enter');
+      } else {
+        _hardResetSoon('route-completed');
+      }
     }
+  }
+
+  /// 两帧后判定并复位：让首帧的尺寸/坐标先落定，否则会把入场动画的中间
+  /// 态当成"排歪"而白白重建一次。
+  void _hardResetSoon(String why) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (why == 'enter') {
+          _hardReset(why);
+        } else if (_geometryBroken()) {
+          _hardReset(why);
+        }
+      });
+      WidgetsBinding.instance.scheduleFrame();
+    });
+    WidgetsBinding.instance.scheduleFrame();
+  }
+
+  /// 几何是否真的错了（三项互相独立：滚动位置、整行左缘、内容起点）。
+  bool _geometryBroken() {
+    final box = _rowKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return false;
+    if (_controller.hasClients && _controller.position.pixels.abs() > 0.5) {
+      return true;
+    }
+    if (!widget.floating && box.localToGlobal(Offset.zero).dx.abs() > 1.0) {
+      return true;
+    }
+    final probeBox = _contentStartKey.currentContext?.findRenderObject();
+    if (probeBox is! RenderBox || !probeBox.hasSize) return false;
+    final probe = probeBox.localToGlobal(Offset.zero, ancestor: box).dx;
+    return (probe - (_padding + _contentShift)).abs() > 1.0;
+  }
+
+  /// 硬复位：位置、绘制补偿、内容补偿一次性归零，并换 key 重建视口。
+  ///
+  /// 用户「滑一下就好」之所以有效，是因为那一下同时让滚动位置、绘制缓存、
+  /// 内容补偿三者重来；前面几版每次只修其中一条，所以总是只修好一半。这里
+  /// 三条一起归零 + 换 key 重建，等价于用户那一下，但不依赖任何通知时机。
+  void _hardReset(String why) {
+    if (!mounted) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastResetMs < 400) return; // 连续转场时防抖
+    _lastResetMs = now;
+    if (_controller.hasClients && _controller.position.pixels != 0) {
+      try {
+        _controller.jumpTo(0);
+      } catch (_) {}
+    }
+    setState(() {
+      _epoch++;
+      _visualShift = 0;
+      _contentShift = 0;
+      _rowHealTries = 0;
+      _contentHealTries = 0;
+    });
+    _lastGx = null;
+    _sameGx = 0;
+    _forceRepaintSoon();
+    if (_diag) {
+      AppLog.warn('srcbar', '[srcbar] hard-reset id=$_id ep=$_epoch why=$why');
+    }
+    _box.add(
+      '[${DateTime.now().toIso8601String()}] [reset] id=$_id ep=$_epoch why=$why',
+    );
+  }
+
+  /// 本帧几何的「异常度」，只用于黑匣子挑最差样本。
+  ///
+  /// 滚动中 p1 本来就随 offset 变化，不算异常；只有位置归零后内容仍不在
+  /// 左内边距（dx0 偏差）或整行不在屏幕左缘，才是真异常。
+  double _severityOf(RenderBox box) {
+    // 转场途中整页都在平移，gx 本来就大；这一段不算异常，否则每次进页面
+    // 都会打一条假的「最差样本」，把真现场淹掉。
+    final anim = ModalRoute.of(context)?.animation;
+    if (anim != null && anim.status != AnimationStatus.completed) return 0;
+    var sev = 0.0;
+    final pos = _controller.hasClients ? _controller.position : null;
+    if (pos != null && pos.pixels < -0.5) sev += 500 + (-pos.pixels);
+    if (!widget.floating) {
+      final gx = box.localToGlobal(Offset.zero).dx;
+      if (gx.abs() > 1.0) sev += 200 + gx.abs();
+    }
+    if (pos == null || pos.pixels.abs() < 0.5) {
+      final probeBox = _contentStartKey.currentContext?.findRenderObject();
+      if (probeBox is RenderBox && probeBox.hasSize) {
+        final probe = probeBox.localToGlobal(Offset.zero, ancestor: box).dx;
+        final dev = probe - (_padding + _contentShift);
+        if (dev.abs() > 1.0) sev += 100 + dev.abs();
+      }
+    }
+    return sev;
   }
 
   void _forceRepaintSoon([int frames = 3]) {
@@ -531,7 +673,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
     final gx = box.localToGlobal(Offset.zero).dx;
     final p1 = gx + probe;
     final anim = ModalRoute.of(context)?.animation;
-    return 'id=$_id '
+    return 'id=$_id ep=$_epoch '
         'gx=${gx.toStringAsFixed(1)} '
         'p1=${p1.toStringAsFixed(1)} '
         'a=${(anim?.value ?? -1).toStringAsFixed(2)}/'
@@ -649,7 +791,9 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
           // 旧视口沿用旧内容宽度算出的位置会留在 `_pixels` 里；换 key 等于
           // 换一个全新的 viewport（offset 归 0，图层也是新的），顺手把
           // 残留位置和可能被复用的旧 raster 一起作废。
-          key: ValueKey('srcbar-${widget.floating}-${widget.children.length}'),
+          key: ValueKey(
+            'srcbar-${widget.floating}-${widget.children.length}-$_epoch',
+          ),
           controller: _controller,
           scrollDirection: Axis.horizontal,
           physics: const ClampingScrollPhysics(),

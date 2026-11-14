@@ -23,6 +23,18 @@ import '../core/application_logger.dart';
 ///    正好被推到右半边（第一颗胶囊落在屏幕中央、左侧空一大段、右侧胶囊
 ///    被裁）。所以切平台一律走 [SourceBarScrollViewState.revealChild]：
 ///    自己量位置，目标显式钳进 `[0, maxScrollExtent]`，尺寸无效就不滚。
+///
+/// 上面五条是"能想到的来路"，实测仍会在**冷启动首帧**留下错位（进搜索
+/// 结果页第一眼就偏，随手滑一下平台行才归位）。首帧的滚动位置/父级坐标
+/// 拿的是路由转场中途的值，之后既没有 `ScrollNotification` 也没有
+/// `ScrollMetricsNotification`，前四条全都不会被触发，于是错误被一直
+/// 保留到用户第一次触摸。所以再补两层**不依赖通知时机**的兜底：
+/// 6. 绘制层消化越界 —— 包一层 `AnimatedBuilder` 监听 controller，只要
+///    `offset < 0` 就用 `Transform.translate(-offset)` 把视觉拉回左缘，
+///    松手后的回正逻辑照旧；
+/// 7. 布局后自愈 —— 转场完成 / 首帧后连续几帧核对本行左缘屏幕坐标，
+///    父级把整行排歪时用 `Transform.translate(-gx)` 画回 x=0。
+/// 两者都只改绘制位置，不动布局，不会和 `Align(centerLeft)` 打架。
 class SourceBarScrollView extends StatefulWidget {
   const SourceBarScrollView({
     super.key,
@@ -53,6 +65,19 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 异常日志节流，避免尺寸反复变化时刷屏。
   int _lastWarnAt = 0;
 
+  /// 整行被父级排歪时的绘制补偿（把这一行画回屏幕左缘）。
+  ///
+  /// 只影响绘制位置，布局仍由 `Align(centerLeft)` 决定；给"父级首帧用了
+  /// 旧尺寸、之后没人重排"的现场兜底。悬浮态依赖父级内边距，不补偿。
+  double _visualShift = 0;
+
+  /// 自愈次数上限，防止父级恒错时每帧重排。
+  int _healTries = 0;
+
+  /// 路由入场动画：转场中整页都在平移，读到的坐标含动画位移，
+  /// 必须等 completed 之后才判定"排歪"。
+  Animation<double>? _routeAnim;
+
   /// 内容起点探针：宽度 0 的哨兵子项，用来量「内容从视口哪一点开始」。
   ///
   /// 只有它能把三种成因区分开：滚动位移（off）、视口被挤窄（vw）、内容
@@ -73,12 +98,69 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   void initState() {
     super.initState();
     _controller.addListener(_onOffsetChanged);
-    // 首帧后再兜一次：PageStorage 恢复、首帧尺寸未定都可能落在越界位置。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _warnIfAbnormal());
+    // 首帧后再兜几次：PageStorage 恢复、首帧尺寸未定、路由转场中途都可能
+    // 落在错误位置，而且这种错位往往不会再触发任何滚动通知。
+    _scheduleHeal(6);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final anim = ModalRoute.of(context)?.animation;
+    if (!identical(anim, _routeAnim)) {
+      _routeAnim?.removeStatusListener(_onRouteStatus);
+      _routeAnim = anim;
+      _routeAnim?.addStatusListener(_onRouteStatus);
+    }
+  }
+
+  void _onRouteStatus(AnimationStatus status) {
+    // 转场结束才是"稳定坐标"，此时再核一次（冷启动 push 进搜索结果页
+    // 正是这条路径：转场期间读到的是整页平移动画中的 x）。
+    if (status == AnimationStatus.completed) _scheduleHeal(3);
+  }
+
+  /// 连续 [frames] 帧做「回正 + 几何自愈」。
+  ///
+  /// 不能只做一次：首帧时 ListView 可能还没拿到最终约束，父级也可能还在
+  /// 用上一轮的尺寸。多跑几帧成本可忽略（每帧只是两次 render box 读值）。
+  void _scheduleHeal(int frames) {
+    if (frames <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _clampToStart();
+      _healGeometry();
+      _scheduleHeal(frames - 1);
+    });
+  }
+
+  /// 布局后核对：整行左缘必须在屏幕 x=0。
+  ///
+  /// 非悬浮态这一行设计上就贴屏幕左缘，所以读到的 gx 不为 0 只可能是父级
+  /// 排歪/首帧残留坐标，用绘制补偿拉回去；补偿只累加差值，不会和上一轮
+  /// 的补偿叠加（`rawGx` 已包含 `_visualShift`）。
+  void _healGeometry() {
+    if (!mounted || widget.floating) return;
+    // 转场未完成时坐标含动画位移，不能当异常
+    if (ModalRoute.of(context)?.animation?.isCompleted == false) return;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final rawGx = box.localToGlobal(Offset.zero).dx;
+    if (rawGx.abs() <= 0.5) return;
+    if (_healTries >= 8) return;
+    _healTries++;
+    final shift = _visualShift - rawGx;
+    setState(() => _visualShift = shift);
+    AppLog.warn(
+      'srcbar',
+      '[srcbar] heal gx=${rawGx.toStringAsFixed(1)} '
+      'shift=${shift.toStringAsFixed(1)}',
+    );
   }
 
   @override
   void dispose() {
+    _routeAnim?.removeStatusListener(_onRouteStatus);
     _controller.removeListener(_onOffsetChanged);
     _controller.dispose();
     super.dispose();
@@ -187,6 +269,20 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   }
 
   Widget _list() {
+    // 绘制层消化越界：offset < 0 时内容整体被推到右边，反向平移把视觉
+    // 拉回左缘。正常滚动（offset >= 0）直接透传 child，不重建。
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final off = _controller.hasClients ? _controller.offset : 0.0;
+        if (off >= 0) return child!;
+        return Transform.translate(offset: Offset(-off, 0), child: child);
+      },
+      child: _scrollView(),
+    );
+  }
+
+  Widget _scrollView() {
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         // 滚动过程中每帧都排帧尾回调会让 pumpAndSettle / 真实渲染
@@ -234,15 +330,21 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 40,
-      // 父级是松约束（Column 居中排布）时必须明确吃满宽度，否则这一行
-      // 可能被排成内容宽度再居中，症状与负偏移完全一样。
-      width: double.infinity,
-      // Align 把这一行钉在左缘：父级即便是居中排布，也不会整行右推
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: _list(),
+    // Transform 放在最外层：它就是"整行被父级排歪"的绘制补偿，
+    // `_healGeometry` 读的 localToGlobal 会沿祖先链累积到它，所以测到的
+    // 是补偿后的实际屏幕坐标——补偿到位后读数归零，不会反复叠加。
+    return Transform.translate(
+      offset: Offset(_visualShift, 0),
+      child: SizedBox(
+        height: 40,
+        // 父级是松约束（Column 居中排布）时必须明确吃满宽度，否则这一行
+        // 可能被排成内容宽度再居中，症状与负偏移完全一样。
+        width: double.infinity,
+        child: Align(
+          // Align 把这一行钉在左缘：父级即便是居中排布，也不会整行右推
+          alignment: Alignment.centerLeft,
+          child: _list(),
+        ),
       ),
     );
   }

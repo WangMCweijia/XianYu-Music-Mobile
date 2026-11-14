@@ -778,7 +778,9 @@ class _StartClampedPosition extends ScrollPositionWithSingleContext {
   @override
   void absorb(ScrollPosition other) {
     super.absorb(other);
-    if (_pixels < 0) super.correctPixels(0);
+    // `_pixels` 是框架库私有字段（子类读不到），走公开的 `pixels` getter
+    if (!hasPixels) return;
+    if (pixels < 0) super.correctPixels(0);
   }
 
   @override

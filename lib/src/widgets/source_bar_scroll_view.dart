@@ -35,9 +35,8 @@ import '../core/application_logger.dart';
 /// 7. 布局后自愈 —— 核对本行左缘屏幕坐标与内容起点，偏了就用
 ///    `Transform.translate` 画回正确位置（行偏了修行、内容偏了修内容，
 ///    两者互不干扰，都不动布局）；
-/// 8. 常驻帧回调 —— 上面几条全是事件驱动，而现场恰恰是"没有任何事件的
-///    那一帧"把错位固化下来的。`addPersistentFrameCallback` 每绘制帧自检，
-///    不再依赖任何通知。
+/// 8. 帧末自检 —— 上面几条全是事件驱动，而现场恰恰是"没有任何事件的
+///    那一帧"把错位固化下来的。每次 build 都排一次帧末核对，走完即弃。
 ///
 /// 2.0.10 的教训：兜底逻辑写对了、触发链也建好了，但 `addPostFrameCallback`
 /// 自己不会请求新帧，页面静止时回调永远等不到帧，链路在第一帧就断掉；而且
@@ -91,6 +90,9 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   /// 内容起点自愈次数上限，同上。
   int _contentHealTries = 0;
 
+  /// 帧末自检是否已排入，避免一次 build 里重复排队。
+  bool _verifyScheduled = false;
+
   /// 路由入场动画：转场中整页都在平移，读到的坐标含动画位移，
   /// 必须等 completed 之后才判定"排歪"。
   Animation<double>? _routeAnim;
@@ -121,14 +123,7 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
   void initState() {
     super.initState();
     _controller.addListener(_onOffsetChanged);
-    // 常驻帧回调：只要这一行所在页面还在绘制，每帧都自检一次。
-    //
-    // 前面所有兜底都是"事件驱动"（滚动通知、尺寸通知、转场完成、有限帧链），
-    // 而现场恰恰是没有事件的那一次布局——错位被画出来之后再没有任何通知，
-    // 于是它一直停在屏幕上，直到用户手指碰到它才触发一次缩放/重建。
-    // 常驻帧回调不依赖任何事件，天然覆盖这种"哑帧"。
-    WidgetsBinding.instance.addPersistentFrameCallback(_onPersistentFrame);
-    // 首屏的帧链仍然要：页面静止后没有帧，常驻回调也不会被调用
+    // 首屏帧链：页面静止后没有帧，帧末自检也不会被调用，得自己请帧。
     _scheduleHeal(24);
   }
 
@@ -140,12 +135,6 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
         oldWidget.floating != widget.floating) {
       _scheduleHeal(20);
     }
-  }
-
-  void _onPersistentFrame(Duration _) {
-    if (!mounted) return;
-    _clampToStart();
-    _healGeometry();
   }
 
   @override
@@ -231,7 +220,6 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removePersistentFrameCallback(_onPersistentFrame);
     _routeAnim?.removeStatusListener(_onRouteStatus);
     _controller.removeListener(_onOffsetChanged);
     _controller.dispose();
@@ -422,6 +410,20 @@ class SourceBarScrollViewState extends State<SourceBarScrollView> {
 
   @override
   Widget build(BuildContext context) {
+    // 每帧一次自检：`addPostFrameCallback` 执行完即丢弃，不像
+    // `addPersistentFrameCallback` 那样无法移除（SchedulerBinding 没有
+    // removePersistentFrameCallback，会一直持有 State）。这里覆盖的是
+    // "错位被画出来、之后没有任何通知"的那一帧——只要它还走 build，
+    // 帧末就会被核对一次；核对触发 setState 又会重新排下一次。
+    if (!_verifyScheduled) {
+      _verifyScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _verifyScheduled = false;
+        if (!mounted) return;
+        _clampToStart();
+        _healGeometry();
+      });
+    }
     // Transform 放在最外层：它就是"整行被父级排歪"的绘制补偿，
     // `_healGeometry` 量的 `_rowKey` 在它内部，坐标沿祖先链会累积到它，
     // 所以读到的是补偿后的实际屏幕坐标——补偿到位后读数归零，不会叠加。

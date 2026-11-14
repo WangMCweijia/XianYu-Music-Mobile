@@ -68,6 +68,13 @@ class SourceBarScrollViewState extends State<SourceBarScrollView>
   /// 视口宽度，每次布局更新。
   double _viewportW = 0;
 
+  /// 内容宽度，由 [_MeasureWidth] 在**布局期**回报。
+  ///
+  /// 不能在 build 里读 `context.size`：LayoutBuilder 的 build 跑在布局过程中，
+  /// 那里读子节点尺寸会触发 `Element.size` 的 assert（2.0.16 第一次 CI 就挂在
+  /// 这里）。布局期回报 + 字段缓存是唯一干净的做法。
+  double _contentW = 0;
+
   /// 位置动画。`unbounded` 让它直接以「像素」为单位，既能 `animateTo`
   /// （切平台居中），也能 `animateWith`（fling 曲线）。
   late final AnimationController _anim;
@@ -83,9 +90,17 @@ class SourceBarScrollViewState extends State<SourceBarScrollView>
   double get _padding => widget.floating ? 2 : 14;
 
   /// 内容可移动的最大距离；内容比视口窄时为 0。
-  double get _maxOffset {
-    final cw = _contentKey.currentContext?.size?.width ?? 0;
-    return math.max(0.0, cw - _viewportW);
+  double get _maxOffset => math.max(0.0, _contentW - _viewportW);
+
+  /// 布局期回报内容宽度（**不能**在这里改状态，帧末再钳）。
+  void _onContentWidth(double w) {
+    if (w == _contentW) return;
+    _contentW = w;
+    if (_offset.value <= _maxOffset) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _set(_offset.value);
+    });
   }
 
   /// 绘制用的位置：**最后一道闸**。无论 [_offset] 被写成什么，画面上的
@@ -255,14 +270,17 @@ class SourceBarScrollViewState extends State<SourceBarScrollView>
                     builder: (context, _, _) => Transform.translate(
                       // 位置只可能让内容往左走；向右偏移的图在这条链上不存在。
                       offset: Offset(-_paintOffset, 0),
-                      child: Row(
-                        key: _contentKey,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(width: _padding),
-                          ...widget.children,
-                          SizedBox(width: _padding),
-                        ],
+                      child: _MeasureWidth(
+                        onWidth: _onContentWidth,
+                        child: Row(
+                          key: _contentKey,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(width: _padding),
+                            ...widget.children,
+                            SizedBox(width: _padding),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -331,6 +349,39 @@ class _NoShowOnScreen extends SingleChildRenderObjectWidget {
 
   @override
   RenderObject createRenderObject(BuildContext context) => _RenderNoShowOnScreen();
+}
+
+/// 布局期把自身宽度回报给父级 State。
+///
+/// `RenderProxyBox.performLayout` 之后尺寸已经确定，这时回报是最早的安全时机；
+/// 之后再读就得等下一帧，而「平台列表从 1 个变成 N 个」那一下正好需要当场知道
+/// 内容变宽了。
+class _MeasureWidth extends SingleChildRenderObjectWidget {
+  const _MeasureWidth({required super.child, required this.onWidth});
+
+  final ValueChanged<double> onWidth;
+
+  @override
+  _RenderMeasureWidth createRenderObject(BuildContext context) =>
+      _RenderMeasureWidth(onWidth);
+
+  @override
+  void updateRenderObject(
+      BuildContext context, _RenderMeasureWidth renderObject) {
+    renderObject.onWidth = onWidth;
+  }
+}
+
+class _RenderMeasureWidth extends RenderProxyBox {
+  _RenderMeasureWidth(this.onWidth);
+
+  ValueChanged<double> onWidth;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    onWidth(size.width);
+  }
 }
 
 class _RenderNoShowOnScreen extends RenderProxyBox {

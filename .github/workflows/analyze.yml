@@ -40,6 +40,11 @@ jobs:
       - name: Lyric aux track test
         run: flutter test test/lyrics_translation_align_test.dart
 
+      # 歌词「当前行」判定：进度被拖回 0 / seek 期间回 0 时若返回 -1，
+      # 渲染层没有任何 isActive 行，整屏歌词会一起走模糊分支糊成一片
+      - name: Lyric timing test
+        run: flutter test test/lyric_timing_test.dart --reporter expanded
+
       # 平台选择行左对齐：横向弹性滚动被推到负偏移时，整行会右移留出空白
       - name: Source bar align test
         run: flutter test test/source_bar_align_test.dart --reporter expanded

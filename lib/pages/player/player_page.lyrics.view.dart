@@ -846,17 +846,20 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     }
   }
 
+  /// 当前行索引。**有词时永远返回合法下标**（最小 0），只有无词才返回 -1。
+  ///
+  /// 早于首行时间戳（进度被拖到 0、seek 期间播放器回 0、歌词首行本身不是
+  /// 00:00）时，旧实现返回 -1，调用方各自理解不同：
+  ///   · `_autoScrollToActiveLine` 自己从 0 起算 → 把列表滚到顶部；
+  ///   · 渲染层用 `isActive = idx == -1` → **没有任何一行是当前行**，
+  ///     于是每行都落进 `dist >= 1` 的模糊分支，整屏歌词一片模糊，
+  ///     并且 700ms 后还会把这片模糊逐行截图烘焙进 `_blurSnapshots` 缓存，
+  ///     拖动进度条后就长期糊着不恢复。
+  /// 第 0 行本来就是「当前行」语义（还没唱到，但它是下一句），统一成 0。
   int _activeIndexFor(double pos) {
+    if (_lines.isEmpty) return -1;
     final curMs = ((pos - _offsetMs / 1000.0) * 1000).toInt();
-    int activeIndex = -1;
-    for (int i = 0; i < _lines.length; i++) {
-      if (_lines[i].timeMs <= curMs) {
-        activeIndex = i;
-      } else {
-        break;
-      }
-    }
-    return activeIndex;
+    return activeLineIndexFor(_lines.map((l) => l.timeMs), curMs);
   }
 
   void _tryPendingCenterJump() {
@@ -908,16 +911,9 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
       return;
     }
 
-    final curMs = ((_displayPos - _offsetMs / 1000.0) * 1000).toInt();
-
-    int activeIndex = 0;
-    for (int i = 0; i < _lines.length; i++) {
-      if (_lines[i].timeMs <= curMs) {
-        activeIndex = i;
-      } else {
-        break;
-      }
-    }
+    // 与渲染层共用同一个「当前行」判定，别再各算一套：两边一旦不一致，
+    // 就会出现「滚动在第 0 行、高亮/清晰行却是没有」的糊屏。
+    final activeIndex = _activeIndexFor(_displayPos);
 
     if (activeIndex == _lastActiveIndex && !force) return;
     final prevIndex = _lastActiveIndex;
@@ -1016,7 +1012,9 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     final transFont = (mainFont * 0.62).clamp(15.0, 25.0);
     final romajiFont = transFont;
 
-    final activeIndex = _activeIndexFor(_displayPos);
+    // 没有任何一行能拿到 isActive 时，整屏歌词会全部糊掉（见 _activeIndexFor
+    // 注释）。这里再钳一次 0，把「无当前行」这个不可能状态从渲染入口堵死。
+    final activeIndex = math.max(0, _activeIndexFor(_displayPos));
     _renderActiveIndex = activeIndex;
 
     Widget content;

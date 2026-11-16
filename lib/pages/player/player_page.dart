@@ -27,6 +27,7 @@ import '../../src/lyrics/floating_lyrics.dart';
 import '../../src/library/library_provider.dart';
 import '../../src/lyrics/lyric_font.dart';
 import '../../src/lyrics/lyric_model.dart';
+import '../../src/lyrics/lyric_timing.dart';
 import '../../src/lyrics/lyrics_bus.dart';
 import '../../src/lyrics/lyrics_repository.dart';
 import '../../src/player/online_quality_probe.dart';

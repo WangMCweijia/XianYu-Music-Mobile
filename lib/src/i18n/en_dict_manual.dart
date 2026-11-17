@@ -420,6 +420,7 @@ const Map<String, String> enDictManual = {
   '歌词显示、桌面歌词窗': 'Lyrics display and desktop lyrics window',
   '歌词已保存': 'Lyrics saved',
   '歌词字号': 'Lyrics font size',
+  '歌词模糊': 'Blur inactive lyrics',
   '歌单、收藏、插件、设置备份为 JSON 并分享':
       'Back up playlists, favorites, plugins and settings as JSON and share',
   '歌单操作': 'Playlist actions',

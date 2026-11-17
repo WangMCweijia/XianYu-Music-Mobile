@@ -252,6 +252,7 @@ class AppSettings {
     this.lyricFontSize = 1,
     this.lyricOffsetMs = 0,
     this.showLyricsRomaji = false,
+    this.lyricBlur = true,
     this.lyricsCantoneseJyutping = true,
     this.lyricAlignment = 'center',
     this.lyricFontName = '',
@@ -360,6 +361,9 @@ class AppSettings {
   final bool showLyricsTranslation;
 
   final bool showLyricsRomaji;
+
+  /// 非当前行歌词模糊（桌面端同款，默认开）
+  final bool lyricBlur;
 
   /// 粤语歌没有罗马音轨时，本地按粤拼（Jyutping）标注。
   /// 只对识别为粤语的歌生效（见 CantoneseDetector），国语歌不会被标成粤音。
@@ -604,6 +608,7 @@ class AppSettings {
     int? libraryMinDurationSeconds,
     bool? showLyricsTranslation,
     bool? showLyricsRomaji,
+    bool? lyricBlur,
     bool? lyricsCantoneseJyutping,
     String? lyricFontName,
     String? lyricFontPath,
@@ -732,6 +737,7 @@ class AppSettings {
       showLyricsTranslation:
           showLyricsTranslation ?? this.showLyricsTranslation,
       showLyricsRomaji: showLyricsRomaji ?? this.showLyricsRomaji,
+      lyricBlur: lyricBlur ?? this.lyricBlur,
       lyricsCantoneseJyutping:
           lyricsCantoneseJyutping ?? this.lyricsCantoneseJyutping,
       lyricFontName: lyricFontName ?? this.lyricFontName,
@@ -945,6 +951,7 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       libraryMinDurationSeconds: prefs.getInt('libraryMinDurationSeconds') ?? 0,
       showLyricsTranslation: prefs.getBool('showLyricsTranslation') ?? true,
       showLyricsRomaji: prefs.getBool('showLyricsRomaji') ?? false,
+      lyricBlur: prefs.getBool('lyricBlur') ?? true,
       lyricsCantoneseJyutping:
           prefs.getBool('lyricsCantoneseJyutping') ?? true,
       lyricFontName: prefs.getString('lyricFontName') ?? '',

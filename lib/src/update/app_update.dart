@@ -255,15 +255,36 @@ Future<void> downloadAndInstallUpdate(
   try {
     final fileName =
         info.assetName.isNotEmpty ? info.assetName : 'xianyu-${info.version}.apk';
+    // 速度用相邻两次回调的增量算（带 EMA 平滑）：整包平均速度会被开头
+    // 的通道测速摊薄，看不出当下快慢
+    var lastReceived = 0;
+    var lastAt = 0;
+    var speedEma = 0.0;
     final file = await downloadApk(
       info.apkUrl,
       fileName: fileName,
       onProgress: (received, total) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (lastAt == 0) {
+          lastReceived = received;
+          lastAt = now;
+        } else {
+          final dt = (now - lastAt) / 1000;
+          if (dt > 0.05) {
+            final inst = (received - lastReceived) / dt / 1048576;
+            speedEma = speedEma == 0 ? inst : speedEma * 0.6 + inst * 0.4;
+            lastReceived = received;
+            lastAt = now;
+          }
+        }
         if (total <= 0) return;
         progress.value = (received / total).clamp(0.0, 1.0).toDouble();
         final got = (received / 1048576).toStringAsFixed(1);
         final all = (total / 1048576).toStringAsFixed(1);
-        status.value = '${tr('正在下载更新包…')} $got/$all MB';
+        final speed = speedEma > 0.05
+            ? ' · ${speedEma.toStringAsFixed(1)} MB/s'
+            : '';
+        status.value = '${tr('正在下载更新包…')} $got/$all MB$speed';
       },
     );
     if (info.sumsUrl.isNotEmpty) {

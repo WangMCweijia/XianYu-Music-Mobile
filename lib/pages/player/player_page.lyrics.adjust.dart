@@ -1,4 +1,4 @@
-﻿part of 'player_page.dart';
+part of 'player_page.dart';
 
 class _LyricsAdjustDialog extends ConsumerStatefulWidget {
   const _LyricsAdjustDialog({required this.hasRomaji, required this.showAlign});
@@ -67,6 +67,7 @@ class _LyricsAdjustDialogState extends ConsumerState<_LyricsAdjustDialog> {
     final s = ref.watch(settingsProvider).valueOrNull;
     final showTranslation = s?.showLyricsTranslation ?? true;
     final showRomaji = s?.showLyricsRomaji ?? false;
+    final blurOn = s?.lyricBlur ?? true;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -111,6 +112,13 @@ class _LyricsAdjustDialogState extends ConsumerState<_LyricsAdjustDialog> {
           // 不按「当前这首有没有罗马音」禁用：罗马音是按开关状态决定要不要
           // 去取的，禁用后用户就再也打不开它了（换个说法：开关必须始终可点）。
           onChanged: (v) => notifier.setShowLyricsRomaji(v),
+        ),
+        _TraditionalPlayerLayoutState._buildLyricMenuSwitch(
+          context,
+          icon: Icons.blur_on_rounded,
+          label: tr('歌词模糊'),
+          value: blurOn,
+          onChanged: (v) => notifier.setLyricBlur(v),
         ),
         _TraditionalPlayerLayoutState._buildLyricMenuAction(
           context,

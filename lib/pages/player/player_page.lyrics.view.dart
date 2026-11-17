@@ -102,6 +102,9 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
   int _fontSizeIdx = 1;
   bool _showTranslation = true;
   bool _showRomaji = false;
+
+  /// 非当前行模糊总开关（歌词调节弹窗「歌词模糊」，默认开）
+  bool _blurEnabled = true;
   int _offsetMs = 0;
 
   TextAlign _align = TextAlign.center;
@@ -966,6 +969,7 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     final newFontSizeIdx = settings?.lyricFontSize ?? 1;
     final newShowTranslation = settings?.showLyricsTranslation ?? true;
     final newShowRomaji = settings?.showLyricsRomaji ?? false;
+    final newBlurEnabled = settings?.lyricBlur ?? true;
     _offsetMs = settings?.lyricOffsetMs ?? 0;
     final newAlign = switch (settings?.lyricAlignment) {
       'left' => TextAlign.left,
@@ -975,6 +979,7 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     if (newFontSizeIdx != _fontSizeIdx ||
         newShowTranslation != _showTranslation ||
         newShowRomaji != _showRomaji ||
+        newBlurEnabled != _blurEnabled ||
         newAlign != _align) {
       _lineLayouts.clear();
       _clearBlurSnapshots();
@@ -989,6 +994,7 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
     _fontSizeIdx = newFontSizeIdx;
     _showTranslation = newShowTranslation;
     _showRomaji = newShowRomaji;
+    _blurEnabled = newBlurEnabled;
     _align = newAlign;
     _settingsPrimed = true;
 
@@ -1103,7 +1109,7 @@ class _LyricsViewState extends ConsumerState<_LyricsView>
                     ? 0.28
                     : 0.16;
                 final passed = idx < activeIndex;
-                final blurSigma = (!_userInteracted && !isActive)
+                final blurSigma = (_blurEnabled && !_userInteracted && !isActive)
                     ? math.min(1.0 + dist + (passed ? 1.0 : 0.0), 8.0)
                     : 0.0;
 

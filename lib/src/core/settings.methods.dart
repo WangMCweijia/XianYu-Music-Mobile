@@ -38,6 +38,7 @@ class SettingsStore {
       prefs.setInt('libraryMinDurationSeconds', next.libraryMinDurationSeconds),
       prefs.setBool('showLyricsTranslation', next.showLyricsTranslation),
       prefs.setBool('showLyricsRomaji', next.showLyricsRomaji),
+      prefs.setBool('lyricBlur', next.lyricBlur),
       prefs.setBool('lyricsCantoneseJyutping', next.lyricsCantoneseJyutping),
       prefs.setString('lyricFontName', next.lyricFontName),
       prefs.setString('lyricFontPath', next.lyricFontPath),
@@ -389,6 +390,8 @@ extension SettingsNotifierMethods on SettingsNotifier {
       _settingsStore.update((s) => s.copyWith(showLyricsTranslation: v));
   Future<void> setShowLyricsRomaji(bool v) =>
       _settingsStore.update((s) => s.copyWith(showLyricsRomaji: v));
+  Future<void> setLyricBlur(bool v) =>
+      _settingsStore.update((s) => s.copyWith(lyricBlur: v));
   Future<void> setLyricsCantoneseJyutping(bool v) =>
       _settingsStore.update((s) => s.copyWith(lyricsCantoneseJyutping: v));
   Future<void> setLyricFontName(String v) =>

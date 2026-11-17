@@ -537,6 +537,14 @@ extension _SettingsCategoryPageSections on _SettingsCategoryPageState {
           ),
           _switchTile(
             context,
+            icon: Icons.blur_on_outlined,
+            title: tr('歌词模糊'),
+            subtitle: tr('非当前行歌词模糊（桌面端同款，默认开）；关掉后整屏歌词一律清晰'),
+            value: s?.lyricBlur ?? true,
+            onChanged: (v) => n.setLyricBlur(v),
+          ),
+          _switchTile(
+            context,
             icon: Icons.translate_outlined,
             title: tr('粤语歌显示粤拼'),
             subtitle: tr(

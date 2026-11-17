@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:xianyu_music_mobile/src/update/apk_installer.dart';
 import 'package:xianyu_music_mobile/src/update/app_update.dart';
 import 'package:xianyu_music_mobile/src/update/github_release.dart';
 
@@ -77,5 +78,24 @@ void main() {
     );
     expect(gh.canInstallInApp, isTrue);
     expect(server.canInstallInApp, isFalse);
+  });
+
+  test('下载通道：镜像在前，权威地址垫底，已带前缀不二次套', () {
+    const url = 'https://github.com/o/r/releases/download/v1/a.apk';
+    final list = apkCandidateUrls(url);
+    expect(list.last, url, reason: '镜像全挂时原始地址是唯一出路');
+    expect(list.length, apkMirrorPrefixes.length + 1);
+    for (final p in apkMirrorPrefixes) {
+      expect(list.contains('$p$url'), isTrue);
+    }
+
+    final mirrored = apkCandidateUrls('${apkMirrorPrefixes.first}$url');
+    expect(mirrored.last, '${apkMirrorPrefixes.first}$url');
+    expect(
+      mirrored.any((u) => u.startsWith(apkMirrorPrefixes.first +
+          apkMirrorPrefixes.first)),
+      isFalse,
+      reason: '输入已是镜像地址时不能再套一层，否则网关会 404',
+    );
   });
 }

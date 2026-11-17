@@ -421,6 +421,8 @@ const Map<String, String> enDictManual = {
   '歌词已保存': 'Lyrics saved',
   '歌词字号': 'Lyrics font size',
   '歌词模糊': 'Blur inactive lyrics',
+  '非当前行歌词模糊（桌面端同款，默认开）；关掉后整屏歌词一律清晰':
+      'Blur inactive lyrics (same as desktop, on by default). Turn off to keep every line sharp',
   '歌单、收藏、插件、设置备份为 JSON 并分享':
       'Back up playlists, favorites, plugins and settings as JSON and share',
   '歌单操作': 'Playlist actions',
